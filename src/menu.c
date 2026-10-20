@@ -119,6 +119,25 @@ enum {
   ToolsMAX,
 };
 
+// Experimental entries that are not part of the translated tools list. They
+// are placed after the regular tools and use a hardcoded label.
+enum {
+  ToolsCarousel = ToolsMAX,
+  ToolsEntries,                  // Total number of selectable entries
+};
+
+// Carousel view (experimental). Layout constants, in pixels.
+#define CAR_PITCH        64      // Distance between the centers of two boxes
+#define CAR_BOX_W        56      // Box size
+#define CAR_BOX_H        56
+#define CAR_BOX_Y        26      // Top of the boxes (below the tab bar)
+#define CAR_ICON_SZ      32      // Stub icon size (a black rectangle for now)
+#define CAR_ICON_Y       10      // Icon offset from the top of the box
+#define CAR_FRAME_PAD     4      // Selection frame padding around a box
+#define CAR_PAGE          4      // Entries skipped by the L/R buttons
+#define CAR_SPEED_DIV     4      // Easing: move 1/4 of the remaining distance
+#define CAR_FRAC_BITS     4      // Scroll position is kept in 1/16 pixels
+
 enum {
   SettTitle1 = 0,
   SettHotkey,
@@ -315,6 +334,19 @@ static struct {
     char tstr[64];                // Temp message render
   } info;
 } smenu;
+
+// State of the experimental carousel view. It browses the same file list as the
+// ROM browser, so the browser location is saved on open and restored on close.
+static struct {
+  bool active;                    // Carousel is being displayed
+  int sel;                        // Selected entry (index in the browser list)
+  int pos16;                      // Scroll position (1/16 px), entry n is at n*CAR_PITCH
+  // Browser state to restore when leaving the carousel
+  char saved_path[MAX_FN_LEN];
+  int saved_sel;
+  int saved_seloff;
+  uint16_t saved_selhist[16];
+} car;
 
 // Same but for popups.
 static struct {
@@ -1434,6 +1466,143 @@ void render_browser(volatile uint8_t *frame) {
   draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
 }
 
+// ---------------------------------------------------------------------------
+// Carousel view (experimental)
+//
+// A horizontally scrolling row of boxes, one per entry of the ROM browser
+// list, with a fixed selection frame in the middle. It is opened from the
+// Tools menu and does not touch the regular menu. For now it only uses plain
+// shapes: every icon is a black rectangle.
+// ---------------------------------------------------------------------------
+
+// Fills the horizontal span [x0, x1) of row y. VRAM only accepts 16 bit writes
+// in this video mode, so unaligned edges need a read-modify-write.
+static void car_span(volatile uint8_t *frame, int y, int x0, int x1, uint8_t color) {
+  if (x0 < 0)
+    x0 = 0;
+  if (x1 > SCREEN_WIDTH)
+    x1 = SCREEN_WIDTH;
+  if (x0 >= x1)
+    return;
+
+  volatile uint16_t *row = (volatile uint16_t*)&frame[y * SCREEN_WIDTH];
+  if (x0 & 1) {
+    row[x0 >> 1] = (row[x0 >> 1] & 0x00FF) | ((uint16_t)color << 8);
+    x0++;
+  }
+  if (x0 >= x1)
+    return;
+  if (x1 & 1) {
+    x1--;
+    row[x1 >> 1] = (row[x1 >> 1] & 0xFF00) | color;
+  }
+  if (x0 < x1)
+    dma_memset16(&frame[y * SCREEN_WIDTH + x0], dup8(color), (x1 - x0) / 2);
+}
+
+// Fills the rectangle [x0, x1) x [y0, y1). Callers keep y inside the screen.
+static void car_rect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, uint8_t color) {
+  for (int y = y0; y < y1; y++)
+    car_span(frame, y, x0, x1, color);
+}
+
+static void car_outline(volatile uint8_t *frame, int x0, int y0, int x1, int y1, int th, uint8_t color) {
+  car_rect(frame, x0, y0, x1, y0 + th, color);
+  car_rect(frame, x0, y1 - th, x1, y1, color);
+  car_rect(frame, x0, y0 + th, x0 + th, y1 - th, color);
+  car_rect(frame, x1 - th, y0 + th, x1, y1 - th, color);
+}
+
+// Scroll position (1/16 px) where the given entry is centered.
+static int car_pos_of(int sel) {
+  return (sel * CAR_PITCH) << CAR_FRAC_BITS;
+}
+
+static void carousel_open() {
+  // Remember where the ROM browser was so it can be left untouched.
+  strcpy(car.saved_path, smenu.browser.cpath);
+  memcpy(car.saved_selhist, smenu.browser.selhist, sizeof(car.saved_selhist));
+  car.saved_sel = smenu.browser.selector;
+  car.saved_seloff = smenu.browser.seloff;
+
+  car.sel = MAX(0, MIN(smenu.browser.selector, smenu.browser.dispentries - 1));
+  car.pos16 = car_pos_of(car.sel);
+  car.active = true;
+}
+
+static void carousel_close() {
+  car.active = false;
+
+  // The carousel can change directories, go back to the original one.
+  if (strcmp(car.saved_path, smenu.browser.cpath)) {
+    strcpy(smenu.browser.cpath, car.saved_path);
+    memcpy(smenu.browser.selhist, car.saved_selhist, sizeof(car.saved_selhist));
+    browser_reload();
+  }
+  const int last = MAX(0, smenu.browser.dispentries - 1);
+  smenu.browser.selector = MIN(car.saved_sel, last);
+  smenu.browser.seloff = MIN(car.saved_seloff, last);
+}
+
+void render_carousel(volatile uint8_t *frame, unsigned fcnt) {
+  const int n = smenu.browser.dispentries;
+  const int cx = SCREEN_WIDTH / 2;
+
+  // Bottom bar with the current path, same as the ROM browser.
+  dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
+  draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
+
+  if (!n) {
+    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, SCREEN_HEIGHT/2 - 8);
+    return;
+  }
+  if (car.sel >= n)
+    car.sel = n - 1;
+
+  // Ease the scroll position towards the selected entry. Moves a fraction of
+  // the remaining distance each frame, and snaps once it is close enough.
+  const int dest = car_pos_of(car.sel);
+  if (fcnt > 8)
+    fcnt = 8;
+  while (fcnt--) {
+    int diff = dest - car.pos16;
+    int step = diff / CAR_SPEED_DIV;
+    car.pos16 += step ? step : diff;
+  }
+
+  // Draw only the boxes that are (at least partially) on screen.
+  const int pos = car.pos16 >> CAR_FRAC_BITS;
+  const int first = MAX(0, (pos - cx - CAR_BOX_W / 2) / CAR_PITCH);
+  const int last = MIN(n - 1, (pos + cx + CAR_BOX_W / 2) / CAR_PITCH + 1);
+  for (int i = first; i <= last; i++) {
+    const int bx = cx + i * CAR_PITCH - pos;      // Box center
+    car_rect(frame, bx - CAR_BOX_W / 2, CAR_BOX_Y,
+                    bx + CAR_BOX_W / 2, CAR_BOX_Y + CAR_BOX_H, HI_COLOR);
+    // Stub icon: black rectangle (palette entry 0 is black).
+    car_rect(frame, bx - CAR_ICON_SZ / 2, CAR_BOX_Y + CAR_ICON_Y,
+                    bx + CAR_ICON_SZ / 2, CAR_BOX_Y + CAR_ICON_Y + CAR_ICON_SZ, 0);
+  }
+
+  // Fixed selection frame in the middle.
+  car_outline(frame, cx - CAR_BOX_W / 2 - CAR_FRAME_PAD, CAR_BOX_Y - CAR_FRAME_PAD,
+                     cx + CAR_BOX_W / 2 + CAR_FRAME_PAD, CAR_BOX_Y + CAR_BOX_H + CAR_FRAME_PAD,
+                     2, FT_COLOR);
+
+  // Name and size of the selected entry.
+  const t_centry *e = sdr_state->fileorder[car.sel];
+  const int ty = CAR_BOX_Y + CAR_BOX_H + CAR_FRAME_PAD + 8;
+  draw_central_text_ovf(e->fname, frame, cx, ty, SCREEN_WIDTH - 16);
+  if (!e->isdir) {
+    char szstr[16] = {0};
+    human_size(szstr, sizeof(szstr), e->filesize);
+    draw_central_text(szstr, frame, cx, ty + 18);
+  }
+
+  char selinfo[16];
+  npf_snprintf(selinfo, sizeof(selinfo), "%d/%d", car.sel + 1, n);
+  draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
+}
+
 void render_fw_flash_popup(volatile uint8_t *frame) {
   // Render a box to give a pop-up feeling
   draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
@@ -2015,14 +2184,17 @@ void render_info(volatile uint8_t *frame) {
 }
 
 void render_tools(volatile uint8_t *frame) {
-  for (unsigned i = 0; i < ToolsMAX; i++)
-    draw_text_ovf(msgs[lang_id][MSG_TOOLS0_SDRAM + i], frame, 22, 26 + 22 * i, 144);
+  // Rows get closer together only when there are too many entries to fit.
+  const unsigned rowh = (ToolsEntries > 6) ? 18 : 22;
+  for (unsigned i = 0; i < ToolsEntries; i++)
+    draw_text_ovf((i < ToolsMAX) ? msgs[lang_id][MSG_TOOLS0_SDRAM + i] : "Carousel (experimental)",
+                  frame, 22, 26 + rowh * i, 144);
 
   smenu.anim_state = (smenu.anim_state + 1) & 255;
-  draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + 22 * smenu.tools.selector);
+  draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + rowh * smenu.tools.selector);
 
   for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, 26 + smenu.tools.selector * 22, 63);
+    render_icon_trans(i, 26 + smenu.tools.selector * rowh, 63);
 }
 
 void reload_theme(unsigned thnum) {
@@ -2096,8 +2268,12 @@ void menu_render(unsigned fcnt) {
         render_tools,
         render_info,
       };
-      renderfns[smenu.menu_tab](frame);
-      smenu.anim_state += fcnt * animspd_lut[anim_speed];
+      if (car.active)
+        render_carousel(frame, fcnt);
+      else {
+        renderfns[smenu.menu_tab](frame);
+        smenu.anim_state += fcnt * animspd_lut[anim_speed];
+      }
     }
   }
 
@@ -2936,6 +3112,65 @@ static void keypress_menu_browse(unsigned newkeys) {
     smenu.browser.seloff = smenu.browser.selector - BROWSER_ROWS + 1;
 }
 
+// Carousel keys: LEFT/RIGHT move one entry, L/R move a few. A opens the entry
+// (enters directories, launches files like the ROM browser does), B goes to
+// the parent directory (or leaves the carousel at the top), START leaves it.
+static void keypress_carousel(unsigned newkeys) {
+  const int n = smenu.browser.dispentries;
+
+  if (newkeys & KEY_BUTTSTA) {
+    carousel_close();
+    return;
+  }
+
+  if (n) {
+    if (newkeys & KEY_BUTTLEFT)
+      car.sel = MAX(0, car.sel - 1);
+    if (newkeys & KEY_BUTTRIGHT)
+      car.sel = MIN(n - 1, car.sel + 1);
+    if (newkeys & KEY_BUTTL)
+      car.sel = MAX(0, car.sel - CAR_PAGE);
+    if (newkeys & KEY_BUTTR)
+      car.sel = MIN(n - 1, car.sel + CAR_PAGE);
+
+    if (newkeys & KEY_BUTTA) {
+      t_centry *e = sdr_state->fileorder[car.sel];
+      if (strlen(smenu.browser.cpath) + strlen(e->fname) + 2 > MAX_FN_LEN) {
+        spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
+      }
+      else if (e->isdir) {
+        strcat(smenu.browser.cpath, e->fname);
+        strcat(smenu.browser.cpath, "/");
+        // Push the position history and start at the top of the new dir
+        memmove(&smenu.browser.selhist[1], &smenu.browser.selhist[0],
+                sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
+        smenu.browser.selhist[0] = car.sel;
+        browser_reload();
+        car.sel = 0;
+        car.pos16 = car_pos_of(0);
+      } else {
+        char path[MAX_FN_LEN];
+        strcpy(path, smenu.browser.cpath);
+        strcat(path, e->fname);
+        browser_open(path, e->filesize);
+      }
+    }
+  }
+
+  if (newkeys & KEY_BUTTB) {
+    if (movedir_up()) {
+      const int prev = smenu.browser.selhist[0];
+      memmove(&smenu.browser.selhist[0], &smenu.browser.selhist[1],
+              sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
+      browser_reload();
+      car.sel = MAX(0, MIN(prev, smenu.browser.dispentries - 1));
+      car.pos16 = car_pos_of(car.sel);
+    }
+    else
+      carousel_close();
+  }
+}
+
 #ifdef SUPPORT_NORGAMES
 static void keypress_menu_norbrowse(unsigned newkeys) {
   if (smenu.fbrowser.maxentries) {
@@ -3114,7 +3349,7 @@ static void keypress_menu_tools(unsigned newkeys) {
   if (newkeys & KEY_BUTTUP)
     smenu.tools.selector = MAX(0, smenu.tools.selector - 1);
   if (newkeys & KEY_BUTTDOWN)
-    smenu.tools.selector = MIN(ToolsMAX - 1, smenu.tools.selector + 1);
+    smenu.tools.selector = MIN(ToolsEntries - 1, smenu.tools.selector + 1);
 
   if (newkeys & KEY_BUTTA) {
     if (smenu.tools.selector == ToolsSDRAMTest) {
@@ -3186,6 +3421,8 @@ static void keypress_menu_tools(unsigned newkeys) {
       spop.qpop.clear_popup_ok = true;
     }
     #endif
+    else if (smenu.tools.selector == ToolsCarousel)
+      carousel_open();
   }
 }
 
@@ -3266,6 +3503,8 @@ void menu_keypress(unsigned newkeys) {
       };
       keyfns[spop.pop_num](newkeys);
     }
+  } else if (car.active) {
+    keypress_carousel(newkeys);
   } else {
     // Menu change via trigger buttons
     int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
