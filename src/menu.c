@@ -48,10 +48,12 @@ extern bool slowsd;
 
 enum {
   MENUTAB_RECENT,        // Browses recently loaded ROMs (can be disabled / hidden)
-  MENUTAB_ROMBROWSE,     // Browses ROMs and launches games.
+  MENUTAB_ROMBROWSE,     // Browses ROMs and launches games (carousel).
   #ifdef SUPPORT_NORGAMES
   MENUTAB_NORBROWSE,     // Browses Flash games and launches them.
   #endif
+  MENUTAB_DSSCREEN,      // Same ROM list, laid out like a DS bottom screen.
+  MENUTAB_CLOCK,         // Clock and calendar (DS top screen).
   MENUTAB_SETTINGS,      // General settings / defaults
   MENUTAB_UILANG,        // UI / Language settings
   MENUTAB_TOOLS,         // Tools (advaned menu)
@@ -119,14 +121,8 @@ enum {
   ToolsMAX,
 };
 
-// Experimental entries that are not part of the translated tools list. They
-// are placed after the regular tools and use a hardcoded label.
-enum {
-  ToolsCarousel = ToolsMAX,
-  ToolsEntries,                  // Total number of selectable entries
-};
-
-// Carousel view (experimental). Layout constants, in pixels.
+// DS-style views (experimental). Layout constants, in pixels.
+// Carousel tab:
 #define CAR_PITCH        64      // Distance between the centers of two boxes
 #define CAR_BOX_W        56      // Box size
 #define CAR_BOX_H        56
@@ -134,9 +130,24 @@ enum {
 #define CAR_ICON_SZ      32      // Stub icon size (a black rectangle for now)
 #define CAR_ICON_Y       10      // Icon offset from the top of the box
 #define CAR_FRAME_PAD     4      // Selection frame padding around a box
-#define CAR_PAGE          4      // Entries skipped by the L/R buttons
+#define CAR_PAGE          4      // Entries skipped by UP/DOWN
 #define CAR_SPEED_DIV     4      // Easing: move 1/4 of the remaining distance
-#define CAR_FRAC_BITS     4      // Scroll position is kept in 1/16 pixels
+// DS bottom screen tab:
+#define DSS_PITCH        44      // Distance between the centers of two boxes
+#define DSS_BOX          36      // Size of a box away from the center
+#define DSS_LIFT         12      // Extra size of the box in the center
+#define DSS_ICON         24      // Stub icon size away from the center
+#define DSS_SHELF_Y     100      // Boxes rest on the shelf, starting here
+#define DSS_TITLE_Y     114      // Title window and arrow buttons
+#define DSS_TITLE_H      24
+// Clock tab:
+#define CLK_DIGIT_W      18      // Seven segment digit size and segment thickness
+#define CLK_DIGIT_H      36
+#define CLK_DIGIT_T       4
+#define CLK_DIGIT_Y      24
+#define CAL_COL_W        20      // Calendar column width
+#define CAL_X            98      // Calendar left edge (clock panel is on the left)
+#define CLK_CX           45      // Center of the clock panel
 
 enum {
   SettTitle1 = 0,
@@ -335,19 +346,6 @@ static struct {
   } info;
 } smenu;
 
-// State of the experimental carousel view. It browses the same file list as the
-// ROM browser, so the browser location is saved on open and restored on close.
-static struct {
-  bool active;                    // Carousel is being displayed
-  int sel;                        // Selected entry (index in the browser list)
-  int pos16;                      // Scroll position (1/16 px), entry n is at n*CAR_PITCH
-  // Browser state to restore when leaving the carousel
-  char saved_path[MAX_FN_LEN];
-  int saved_sel;
-  int saved_seloff;
-  uint16_t saved_selhist[16];
-} car;
-
 // Same but for popups.
 static struct {
   const char *alert_msg;          // Extra pop-up message
@@ -372,6 +370,7 @@ static struct {
     t_dec_date val;
     int selector;
     void (*callback)();                   // Function to call on "save"
+    const char *title;                    // Optional title (default if NULL)
   } rtcpop;
 
   union {
@@ -1421,59 +1420,20 @@ void render_flashbrowser(volatile uint8_t *frame) {
 }
 #endif
 
-void render_browser(volatile uint8_t *frame) {
-  // Render bar below to show path URI
-  dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
-
-  if (!smenu.browser.dispentries)
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, SCREEN_WIDTH/2, SCREEN_HEIGHT/2-8);
-  else {
-    for (unsigned i = 0; i < BROWSER_ROWS; i++) {
-      if (smenu.browser.seloff + i >= smenu.browser.dispentries)
-        break;
-
-      char szstr[16] = {0};
-      t_centry *e = sdr_state->fileorder[smenu.browser.seloff + i];
-
-      unsigned iconidx = (e->attr & AM_HID) ? ((e->attr & AM_DIR) ? ICON_HFOLDER : ICON_HFILE) :
-                         (e->attr & AM_DIR) ? ICON_FOLDER :
-                         guessicon(e->fname);
-
-      render_icon(2, (i+1)*16, iconidx);
-
-      if (!(e->attr & AM_DIR)) {
-        human_size(szstr, sizeof(szstr), e->filesize);
-        draw_rightj_text(szstr, frame, SCREEN_WIDTH - 2, (1 + i) * 16);
-      }
-
-      // Animate the row entries if they are too long!
-      if (i == smenu.browser.selector - smenu.browser.seloff)
-        draw_text_ovf_rotate(e->fname, frame, 20, (1 + i) * 16,
-                             SCREEN_WIDTH - 26 - font_width(szstr), &smenu.anim_state);
-      else
-        draw_text_ovf(e->fname, frame, 20, (1 + i) * 16, SCREEN_WIDTH - 26 - font_width(szstr));
-    }
-
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, (smenu.browser.selector - smenu.browser.seloff + 1)*16, 63);
-  }
-
-  // Draw path, cut left part if necessary.
-  draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
-
-  char selinfo[16];
-  npf_snprintf(selinfo, sizeof(selinfo), "%u/%d", smenu.browser.selector + 1, smenu.browser.dispentries);
-  draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
-}
-
 // ---------------------------------------------------------------------------
-// Carousel view (experimental)
+// DS-style views (experimental)
 //
-// A horizontally scrolling row of boxes, one per entry of the ROM browser
-// list, with a fixed selection frame in the middle. It is opened from the
-// Tools menu and does not touch the regular menu. For now it only uses plain
-// shapes: every icon is a black rectangle.
+// The ROM browser tab is a horizontally scrolling carousel with one box per
+// entry of the current directory (the selection lives in smenu.browser, so the
+// file manager pop up, hiding files, etc. keep working). Two more tabs show
+// other parts of a DS UI: a bottom-screen layout (shelf, raised box, title
+// window) over the same list, and a top-screen clock with a month calendar.
+// Everything is drawn with plain shapes and text, no textures: every icon is
+// a black rectangle for now.
 // ---------------------------------------------------------------------------
+
+static unsigned render_fcnt;     // Frames elapsed since the previous render
+static int car_pos;              // Scroll position in 1/256 of an entry
 
 // Fills the horizontal span [x0, x1) of row y. VRAM only accepts 16 bit writes
 // in this video mode, so unaligned edges need a read-modify-write.
@@ -1500,8 +1460,12 @@ static void car_span(volatile uint8_t *frame, int y, int x0, int x1, uint8_t col
     dma_memset16(&frame[y * SCREEN_WIDTH + x0], dup8(color), (x1 - x0) / 2);
 }
 
-// Fills the rectangle [x0, x1) x [y0, y1). Callers keep y inside the screen.
+// Fills the rectangle [x0, x1) x [y0, y1), clipped to the screen.
 static void car_rect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, uint8_t color) {
+  if (y0 < 0)
+    y0 = 0;
+  if (y1 > SCREEN_HEIGHT)
+    y1 = SCREEN_HEIGHT;
   for (int y = y0; y < y1; y++)
     car_span(frame, y, x0, x1, color);
 }
@@ -1513,69 +1477,53 @@ static void car_outline(volatile uint8_t *frame, int x0, int y0, int x1, int y1,
   car_rect(frame, x1 - th, y0 + th, x1, y1 - th, color);
 }
 
-// Scroll position (1/16 px) where the given entry is centered.
-static int car_pos_of(int sel) {
-  return (sel * CAR_PITCH) << CAR_FRAC_BITS;
-}
-
-static void carousel_open() {
-  // Remember where the ROM browser was so it can be left untouched.
-  strcpy(car.saved_path, smenu.browser.cpath);
-  memcpy(car.saved_selhist, smenu.browser.selhist, sizeof(car.saved_selhist));
-  car.saved_sel = smenu.browser.selector;
-  car.saved_seloff = smenu.browser.seloff;
-
-  car.sel = MAX(0, MIN(smenu.browser.selector, smenu.browser.dispentries - 1));
-  car.pos16 = car_pos_of(car.sel);
-  car.active = true;
-}
-
-static void carousel_close() {
-  car.active = false;
-
-  // The carousel can change directories, go back to the original one.
-  if (strcmp(car.saved_path, smenu.browser.cpath)) {
-    strcpy(smenu.browser.cpath, car.saved_path);
-    memcpy(smenu.browser.selhist, car.saved_selhist, sizeof(car.saved_selhist));
-    browser_reload();
+// Moves the scroll position towards the selected entry. Takes a fraction of
+// the remaining distance each frame and snaps once it is close enough.
+static void car_ease() {
+  const int dest = smenu.browser.selector << 8;
+  unsigned frames = render_fcnt > 8 ? 8 : render_fcnt;
+  while (frames--) {
+    const int diff = dest - car_pos;
+    const int step = diff / CAR_SPEED_DIV;
+    car_pos += step ? step : diff;
   }
-  const int last = MAX(0, smenu.browser.dispentries - 1);
-  smenu.browser.selector = MIN(car.saved_sel, last);
-  smenu.browser.seloff = MIN(car.saved_seloff, last);
 }
 
-void render_carousel(volatile uint8_t *frame, unsigned fcnt) {
-  const int n = smenu.browser.dispentries;
-  const int cx = SCREEN_WIDTH / 2;
+// Screen X of the center of entry i, for the given spacing between entries.
+static int car_xof(int i, int pitch) {
+  return SCREEN_WIDTH / 2 + ((((i << 8) - car_pos) * pitch) >> 8);
+}
 
-  // Bottom bar with the current path, same as the ROM browser.
+// Bottom bar with the current path and the entry counter (top right corner),
+// shared by the views that browse the file list.
+static void car_chrome(volatile uint8_t *frame) {
+  const int n = smenu.browser.dispentries;
   dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
   draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
 
-  if (!n) {
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, SCREEN_HEIGHT/2 - 8);
-    return;
-  }
-  if (car.sel >= n)
-    car.sel = n - 1;
+  char selinfo[16];
+  npf_snprintf(selinfo, sizeof(selinfo), "%d/%d", n ? smenu.browser.selector + 1 : 0, n);
+  draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
 
-  // Ease the scroll position towards the selected entry. Moves a fraction of
-  // the remaining distance each frame, and snaps once it is close enough.
-  const int dest = car_pos_of(car.sel);
-  if (fcnt > 8)
-    fcnt = 8;
-  while (fcnt--) {
-    int diff = dest - car.pos16;
-    int step = diff / CAR_SPEED_DIV;
-    car.pos16 += step ? step : diff;
-  }
+  if (!n)
+    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 8);
+}
+
+// Carousel: boxes in a row, a fixed selection frame in the middle.
+void render_carousel(volatile uint8_t *frame) {
+  car_chrome(frame);
+  const int n = smenu.browser.dispentries;
+  if (!n)
+    return;
+  const int cx = SCREEN_WIDTH / 2;
+  car_ease();
 
   // Draw only the boxes that are (at least partially) on screen.
-  const int pos = car.pos16 >> CAR_FRAC_BITS;
-  const int first = MAX(0, (pos - cx - CAR_BOX_W / 2) / CAR_PITCH);
-  const int last = MIN(n - 1, (pos + cx + CAR_BOX_W / 2) / CAR_PITCH + 1);
+  const int range = cx / CAR_PITCH + 2;
+  const int first = MAX(0, (car_pos >> 8) - range);
+  const int last = MIN(n - 1, (car_pos >> 8) + range);
   for (int i = first; i <= last; i++) {
-    const int bx = cx + i * CAR_PITCH - pos;      // Box center
+    const int bx = car_xof(i, CAR_PITCH);          // Box center
     car_rect(frame, bx - CAR_BOX_W / 2, CAR_BOX_Y,
                     bx + CAR_BOX_W / 2, CAR_BOX_Y + CAR_BOX_H, HI_COLOR);
     // Stub icon: black rectangle (palette entry 0 is black).
@@ -1589,7 +1537,7 @@ void render_carousel(volatile uint8_t *frame, unsigned fcnt) {
                      2, FT_COLOR);
 
   // Name and size of the selected entry.
-  const t_centry *e = sdr_state->fileorder[car.sel];
+  const t_centry *e = sdr_state->fileorder[smenu.browser.selector];
   const int ty = CAR_BOX_Y + CAR_BOX_H + CAR_FRAME_PAD + 8;
   draw_central_text_ovf(e->fname, frame, cx, ty, SCREEN_WIDTH - 16);
   if (!e->isdir) {
@@ -1597,10 +1545,188 @@ void render_carousel(volatile uint8_t *frame, unsigned fcnt) {
     human_size(szstr, sizeof(szstr), e->filesize);
     draw_central_text(szstr, frame, cx, ty + 18);
   }
+}
 
-  char selinfo[16];
-  npf_snprintf(selinfo, sizeof(selinfo), "%d/%d", car.sel + 1, n);
-  draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
+// Arrow button of the DS title window. Points left or right, dimmed at the ends.
+static void dss_arrow(volatile uint8_t *frame, bool left, bool enabled) {
+  const int x0 = left ? 2 : 218;
+  const int cy = DSS_TITLE_Y + DSS_TITLE_H / 2;
+  draw_box_full(frame, x0, x0 + 20, DSS_TITLE_Y, DSS_TITLE_Y + DSS_TITLE_H, FG_COLOR, HI_COLOR);
+  for (int dy = -5; dy <= 5; dy++) {
+    const int w = dy < 0 ? -dy : dy;
+    if (left)
+      car_span(frame, cy + dy, x0 + 6 + w, x0 + 14, enabled ? FT_COLOR : FG_COLOR);
+    else
+      car_span(frame, cy + dy, x0 + 6, x0 + 14 - w, enabled ? FT_COLOR : FG_COLOR);
+  }
+}
+
+// DS bottom screen layout (as in the DSi menu): boxes sitting on a shelf, the
+// one in the middle raised and bigger, a title window with arrow buttons below.
+void render_dsscreen(volatile uint8_t *frame) {
+  car_chrome(frame);
+  const int n = smenu.browser.dispentries;
+  if (!n)
+    return;
+  const int sel = smenu.browser.selector;
+  const int cx = SCREEN_WIDTH / 2;
+  car_ease();
+
+  // The shelf.
+  car_rect(frame, 0, DSS_SHELF_Y, SCREEN_WIDTH, DSS_SHELF_Y + 6, HI_COLOR);
+  car_rect(frame, 0, DSS_SHELF_Y + 6, SCREEN_WIDTH, DSS_SHELF_Y + 8, FG_COLOR);
+
+  // Boxes grow and get a stronger frame as they approach the center. The one
+  // closest to the center is drawn last so it stays on top.
+  const int near = MAX(0, MIN(n - 1, (car_pos + 128) >> 8));
+  const int range = cx / DSS_PITCH + 2;
+  const int first = MAX(0, (car_pos >> 8) - range);
+  const int last = MIN(n - 1, (car_pos >> 8) + range);
+  for (int k = first; k <= last + 1; k++) {
+    const int i = (k == last + 1) ? near : k;       // Last pass: the nearest one
+    if (k <= last && i == near)
+      continue;
+    const int bx = car_xof(i, DSS_PITCH);
+    int dx = bx - cx;
+    if (dx < 0)
+      dx = -dx;
+    int lift = DSS_LIFT - dx * DSS_LIFT / DSS_PITCH;
+    lift = (lift < 0 ? 0 : lift) & ~1;
+    const int size = DSS_BOX + lift;
+    const int isz = DSS_ICON + (lift * 2 / 3 & ~1);
+    const int x0 = bx - size / 2;
+    const int y0 = DSS_SHELF_Y - size;
+    car_rect(frame, x0, y0, x0 + size, DSS_SHELF_Y, lift >= DSS_LIFT - 2 ? FT_COLOR : FG_COLOR);
+    car_rect(frame, x0 + 2, y0 + 2, x0 + size - 2, DSS_SHELF_Y, HI_COLOR);
+    // Stub icon: black rectangle.
+    car_rect(frame, bx - isz / 2, y0 + (size - isz) / 2 - 2, bx + isz / 2, y0 + (size - isz) / 2 - 2 + isz, 0);
+  }
+
+  // Title window with the arrow buttons.
+  dss_arrow(frame, true, sel > 0);
+  dss_arrow(frame, false, sel < n - 1);
+  draw_box_full(frame, 24, 216, DSS_TITLE_Y, DSS_TITLE_Y + DSS_TITLE_H, FG_COLOR, HI_COLOR);
+  const t_centry *e = sdr_state->fileorder[sel];
+  draw_central_text_ovf(e->fname, frame, cx, DSS_TITLE_Y + 4, 176);
+
+  // Entry info above the boxes.
+  char info[24] = "Folder";
+  if (!e->isdir)
+    human_size(info, sizeof(info), e->filesize);
+  draw_central_text(info, frame, cx, 20);
+}
+
+// ---------------------------------------------------------------------------
+// Clock and calendar (top screen of the DS menus).
+//
+// The Supercard has no real time clock, so the clock is kept in software: a
+// base time (set by the user, stored in the UI settings) plus the time elapsed
+// since it was set, counted in video frames. It stops advancing while
+// interrupts are masked and it has to be set again after a power cycle.
+// ---------------------------------------------------------------------------
+
+static uint32_t clock_base_ts;       // Seconds since 2000-01-01 at clock_base_frame
+static unsigned clock_base_frame;    // Value of frame_count when it was set
+
+static uint32_t clock_now() {
+  // 280896 cycles per frame at 16.78MHz: 4389 / 2^18 seconds per frame.
+  const uint32_t elapsed = (uint32_t)(((uint64_t)(frame_count - clock_base_frame) * 4389) >> 18);
+  return clock_base_ts + elapsed;
+}
+
+static void clock_set_callback() {
+  clock_base_ts = date2timestamp(&spop.rtcpop.val);
+  clock_base_frame = frame_count;
+  clock_ts_default = clock_base_ts;
+  save_ui_settings();
+}
+
+static const char *const clk_wdays[7] = {
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+};
+static const char *const clk_wdays_short[7] = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
+static const char *const clk_months[12] = {
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+};
+
+// Number of days in a month (year is 0..99, years since 2000: all multiples
+// of four are leap years).
+static unsigned clock_dim(unsigned year, unsigned month) {
+  static const uint8_t dim[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+  return dim[month - 1] + (month == 2 && (year % 4) == 0);
+}
+
+// Day of the week, 0 is Sunday. 2000-01-01 was a Saturday.
+static unsigned clock_wday(uint32_t ts) {
+  return (6 + ts / 86400) % 7;
+}
+
+// One seven segment digit, with the unlit segments faintly visible like on a
+// LCD. Segment bits: 0=top 1=top right 2=bottom right 3=bottom 4=bottom left
+// 5=top left 6=middle.
+static void clock_digit(volatile uint8_t *frame, int x, int y, unsigned digit) {
+  static const uint8_t segs[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
+  const int w = CLK_DIGIT_W, t = CLK_DIGIT_T, mid = (CLK_DIGIT_H - t) / 2;
+  const struct { int8_t x0, y0, x1, y1; } rects[7] = {
+    { t, 0, w - t, t },                                   // top
+    { w - t, t, w, mid },                                 // top right
+    { w - t, mid + t, w, CLK_DIGIT_H - t },               // bottom right
+    { t, CLK_DIGIT_H - t, w - t, CLK_DIGIT_H },           // bottom
+    { 0, mid + t, t, CLK_DIGIT_H - t },                   // bottom left
+    { 0, t, t, mid },                                     // top left
+    { t, mid, w - t, mid + t },                           // middle
+  };
+  for (unsigned s = 0; s < 7; s++)
+    car_rect(frame, x + rects[s].x0, y + rects[s].y0, x + rects[s].x1, y + rects[s].y1,
+             (segs[digit % 10] >> s) & 1 ? FT_COLOR : HI_COLOR);
+}
+
+void render_clock(volatile uint8_t *frame) {
+  dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
+  draw_text_ovf("A: Set time", frame, 8, 144, SCREEN_WIDTH - 16);
+
+  const uint32_t now = clock_now();
+  t_dec_date d;
+  timestamp2date(now, &d);
+  const unsigned year = d.year, month = d.month, day = d.day;
+  char buf[24];
+
+  // Big clock, left panel. The colon blinks every second.
+  clock_digit(frame,  2, CLK_DIGIT_Y, d.hour / 10);
+  clock_digit(frame, 22, CLK_DIGIT_Y, d.hour % 10);
+  if (!(d.sec & 1)) {
+    car_rect(frame, 43, CLK_DIGIT_Y + 10, 47, CLK_DIGIT_Y + 14, FT_COLOR);
+    car_rect(frame, 43, CLK_DIGIT_Y + 22, 47, CLK_DIGIT_Y + 26, FT_COLOR);
+  }
+  clock_digit(frame, 50, CLK_DIGIT_Y, d.min / 10);
+  clock_digit(frame, 70, CLK_DIGIT_Y, d.min % 10);
+
+  npf_snprintf(buf, sizeof(buf), "%02d", d.sec);
+  draw_central_text(buf, frame, CLK_CX, CLK_DIGIT_Y + CLK_DIGIT_H + 4);
+  draw_central_text(clk_wdays[clock_wday(now)], frame, CLK_CX, 90);
+  npf_snprintf(buf, sizeof(buf), "%d %s %d", day, clk_months[month - 1], 2000 + year);
+  draw_central_text(buf, frame, CLK_CX, 108);
+
+  // Divider.
+  car_rect(frame, CAL_X - 6, 20, CAL_X - 4, 140, FG_COLOR);
+
+  // Calendar, right panel: month title, weekday initials and a 7x6 day grid.
+  const int cx0 = CAL_X;
+  npf_snprintf(buf, sizeof(buf), "%s %d", clk_months[month - 1], 2000 + year);
+  draw_central_text(buf, frame, cx0 + CAL_COL_W * 7 / 2, 16);
+  for (unsigned c = 0; c < 7; c++)
+    draw_central_text(clk_wdays_short[c], frame, cx0 + c * CAL_COL_W + CAL_COL_W / 2, 32);
+
+  const unsigned first = clock_wday(date2timestamp(&(t_dec_date){ .year = d.year, .month = d.month, .day = 1 }));
+  for (unsigned dd = 1; dd <= clock_dim(year, month); dd++) {
+    const unsigned idx = first + dd - 1;
+    const int x = cx0 + (idx % 7) * CAL_COL_W;
+    const int y = 48 + (idx / 7) * 16;
+    if (dd == day)
+      car_rect(frame, x, y + 1, x + CAL_COL_W, y + 15, FG_COLOR);
+    npf_snprintf(buf, sizeof(buf), "%u", dd);
+    draw_central_text(buf, frame, x + CAL_COL_W / 2, y);
+  }
 }
 
 void render_fw_flash_popup(volatile uint8_t *frame) {
@@ -1890,7 +2016,7 @@ void render_popupq(volatile uint8_t *frame, unsigned fcnt) {
 void render_rtcpop(volatile uint8_t *frame) {
   draw_box_outline(frame, 2, 240-2, 18, 158, FG_COLOR);
 
-  draw_central_text(msgs[lang_id][MSG_DEF_RTCVAL], frame, SCREEN_WIDTH/2, 32);
+  draw_central_text(spop.rtcpop.title ?: msgs[lang_id][MSG_DEF_RTCVAL], frame, SCREEN_WIDTH/2, 32);
 
   const t_dec_date *v = &spop.rtcpop.val;
   char thour[3] = {'0' + v->hour /10, '0' + v->hour  % 10, 0};
@@ -2184,17 +2310,14 @@ void render_info(volatile uint8_t *frame) {
 }
 
 void render_tools(volatile uint8_t *frame) {
-  // Rows get closer together only when there are too many entries to fit.
-  const unsigned rowh = (ToolsEntries > 6) ? 18 : 22;
-  for (unsigned i = 0; i < ToolsEntries; i++)
-    draw_text_ovf((i < ToolsMAX) ? msgs[lang_id][MSG_TOOLS0_SDRAM + i] : "Carousel (experimental)",
-                  frame, 22, 26 + rowh * i, 144);
+  for (unsigned i = 0; i < ToolsMAX; i++)
+    draw_text_ovf(msgs[lang_id][MSG_TOOLS0_SDRAM + i], frame, 22, 26 + 22 * i, 144);
 
   smenu.anim_state = (smenu.anim_state + 1) & 255;
-  draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + rowh * smenu.tools.selector);
+  draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + 22 * smenu.tools.selector);
 
   for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, 26 + smenu.tools.selector * rowh, 63);
+    render_icon_trans(i, 26 + smenu.tools.selector * 22, 63);
 }
 
 void reload_theme(unsigned thnum) {
@@ -2230,8 +2353,24 @@ static const struct {
 
 // Renders the menu. Arg0 represents the frame count difference with the
 // previous rendered frame (for animations and similar stuff).
+// Icon shown in the tab bar for each tab.
+static const uint8_t tab_icons[MENUTAB_MAX] = {
+  [MENUTAB_RECENT]     = ICON_RECENT,
+  [MENUTAB_ROMBROWSE]  = ICON_DISK,
+  #ifdef SUPPORT_NORGAMES
+  [MENUTAB_NORBROWSE]  = ICON_FLASH,
+  #endif
+  [MENUTAB_DSSCREEN]   = ICON_DSSCREEN,
+  [MENUTAB_CLOCK]      = ICON_CLOCK,
+  [MENUTAB_SETTINGS]   = ICON_SETTINGS,
+  [MENUTAB_UILANG]     = ICON_UILANG_SETTINGS,
+  [MENUTAB_TOOLS]      = ICON_TOOLS,
+  [MENUTAB_INFO]       = ICON_INFO,
+};
+
 void menu_render(unsigned fcnt) {
   objnum = 0;
+  render_fcnt = fcnt;
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
 
   // Render the tab menu on top (rows 0..15), highlighting the selected option
@@ -2241,9 +2380,9 @@ void menu_render(unsigned fcnt) {
   int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
   for (unsigned i = mintab; i < MENUTAB_MAX; i++)
     if (i == smenu.menu_tab)
-      render_icon((i - mintab)*16, 0, i + ICON_RECENT);
+      render_icon((i - mintab)*16, 0, tab_icons[i]);
     else
-      render_icon_trans((i - mintab)*16, 0, i + ICON_RECENT);
+      render_icon_trans((i - mintab)*16, 0, tab_icons[i]);
 
   // Render the main area
   dma_memset16(&frame[16*SCREEN_WIDTH], dup8(BG_COLOR), SCREEN_WIDTH*(SCREEN_HEIGHT-16) / 2);
@@ -2259,21 +2398,19 @@ void menu_render(unsigned fcnt) {
     } else {
       static const t_mrender_fn renderfns[] = {
         render_recent,
-        render_browser,
+        render_carousel,
         #ifdef SUPPORT_NORGAMES
         render_flashbrowser,
         #endif
+        render_dsscreen,
+        render_clock,
         render_settings,
         render_ui_settings,
         render_tools,
         render_info,
       };
-      if (car.active)
-        render_carousel(frame, fcnt);
-      else {
-        renderfns[smenu.menu_tab](frame);
-        smenu.anim_state += fcnt * animspd_lut[anim_speed];
-      }
+      renderfns[smenu.menu_tab](frame);
+      smenu.anim_state += fcnt * animspd_lut[anim_speed];
     }
   }
 
@@ -2304,6 +2441,11 @@ void menu_init(int sram_testres) {
   // Reset to ROM browser and SD card root.
   memset(&smenu, 0, sizeof(smenu));
   memset(&spop, 0, sizeof(spop));
+
+  // Start the software clock from the last time the user set.
+  clock_base_ts = clock_ts_default;
+  clock_base_frame = frame_count;
+  car_pos = 0;
 
   // Reset the file browser as well.
   strcpy(smenu.browser.cpath, "/");
@@ -3053,33 +3195,40 @@ static void keypress_menu_recent(unsigned newkeys) {
     smenu.recent.seloff = smenu.recent.selector - RECENT_ROWS + 1;
 }
 
+// Keys for the carousel and DS screen tabs, which share the same ROM list.
+// LEFT/RIGHT move one entry and UP/DOWN a few. A opens the entry (enters
+// directories, launches files), B goes to the parent directory and SELECT
+// shows the file management menu, like in the plain ROM browser.
 static void keypress_menu_browse(unsigned newkeys) {
-  if (smenu.browser.dispentries) {
-    // Move menu up and down
+  const int n = smenu.browser.dispentries;
+  if (n) {
+    int sel = smenu.browser.selector;
+    if (newkeys & KEY_BUTTLEFT)
+      sel = MAX(0, sel - 1);
+    if (newkeys & KEY_BUTTRIGHT)
+      sel = MIN(n - 1, sel + 1);
     if (newkeys & KEY_BUTTUP)
-      smenu.browser.selector = MAX(0, smenu.browser.selector - 1);
+      sel = MAX(0, sel - CAR_PAGE);
     if (newkeys & KEY_BUTTDOWN)
-      smenu.browser.selector = MIN(smenu.browser.dispentries - 1, smenu.browser.selector + 1);
-    if (newkeys & KEY_BUTTLEFT) {
-      smenu.browser.selector = MAX(0, smenu.browser.selector - BROWSER_ROWS);
-      smenu.browser.seloff   = MAX(0, smenu.browser.seloff - BROWSER_ROWS);
-    }
-    if (newkeys & KEY_BUTTRIGHT) {
-      smenu.browser.selector = MIN(smenu.browser.dispentries - 1, smenu.browser.selector + BROWSER_ROWS);
-      smenu.browser.seloff   = MIN(smenu.browser.dispentries - 1, smenu.browser.seloff   + BROWSER_ROWS);
-    }
+      sel = MIN(n - 1, sel + CAR_PAGE);
+    smenu.browser.selector = sel;
+
     // Move into a new dir and/or open a file
     if (newkeys & KEY_BUTTA) {
-      t_centry *e = sdr_state->fileorder[smenu.browser.selector];
-      if (e->isdir) {
+      t_centry *e = sdr_state->fileorder[sel];
+      if (strlen(smenu.browser.cpath) + strlen(e->fname) + 2 > MAX_FN_LEN) {
+        spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
+      }
+      else if (e->isdir) {
         strcat(smenu.browser.cpath, e->fname);
         strcat(smenu.browser.cpath, "/");
         // Push selector history and reset it in the new dir
         memmove(&smenu.browser.selhist[1], &smenu.browser.selhist[0],
                 sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
-        smenu.browser.selhist[0] = smenu.browser.selector;
+        smenu.browser.selhist[0] = sel;
         smenu.browser.selector = 0;
         browser_reload();
+        car_pos = smenu.browser.selector << 8;     // No scrolling across directories
       } else {
         char path[MAX_FN_LEN];
         strcpy(path, smenu.browser.cpath);
@@ -3101,73 +3250,18 @@ static void keypress_menu_browse(unsigned newkeys) {
       memmove(&smenu.browser.selhist[0], &smenu.browser.selhist[1],
               sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
       browser_reload();
+      car_pos = smenu.browser.selector << 8;
     }
   }
-
-  // Selector was updated, figure out how we update the menu params so it
-  // can be rendered properly.
-  if (smenu.browser.selector < smenu.browser.seloff)
-    smenu.browser.seloff = smenu.browser.selector;
-  else if (smenu.browser.selector >= smenu.browser.seloff + BROWSER_ROWS)
-    smenu.browser.seloff = smenu.browser.selector - BROWSER_ROWS + 1;
 }
 
-// Carousel keys: LEFT/RIGHT move one entry, L/R move a few. A opens the entry
-// (enters directories, launches files like the ROM browser does), B goes to
-// the parent directory (or leaves the carousel at the top), START leaves it.
-static void keypress_carousel(unsigned newkeys) {
-  const int n = smenu.browser.dispentries;
-
-  if (newkeys & KEY_BUTTSTA) {
-    carousel_close();
-    return;
-  }
-
-  if (n) {
-    if (newkeys & KEY_BUTTLEFT)
-      car.sel = MAX(0, car.sel - 1);
-    if (newkeys & KEY_BUTTRIGHT)
-      car.sel = MIN(n - 1, car.sel + 1);
-    if (newkeys & KEY_BUTTL)
-      car.sel = MAX(0, car.sel - CAR_PAGE);
-    if (newkeys & KEY_BUTTR)
-      car.sel = MIN(n - 1, car.sel + CAR_PAGE);
-
-    if (newkeys & KEY_BUTTA) {
-      t_centry *e = sdr_state->fileorder[car.sel];
-      if (strlen(smenu.browser.cpath) + strlen(e->fname) + 2 > MAX_FN_LEN) {
-        spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
-      }
-      else if (e->isdir) {
-        strcat(smenu.browser.cpath, e->fname);
-        strcat(smenu.browser.cpath, "/");
-        // Push the position history and start at the top of the new dir
-        memmove(&smenu.browser.selhist[1], &smenu.browser.selhist[0],
-                sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
-        smenu.browser.selhist[0] = car.sel;
-        browser_reload();
-        car.sel = 0;
-        car.pos16 = car_pos_of(0);
-      } else {
-        char path[MAX_FN_LEN];
-        strcpy(path, smenu.browser.cpath);
-        strcat(path, e->fname);
-        browser_open(path, e->filesize);
-      }
-    }
-  }
-
-  if (newkeys & KEY_BUTTB) {
-    if (movedir_up()) {
-      const int prev = smenu.browser.selhist[0];
-      memmove(&smenu.browser.selhist[0], &smenu.browser.selhist[1],
-              sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
-      browser_reload();
-      car.sel = MAX(0, MIN(prev, smenu.browser.dispentries - 1));
-      car.pos16 = car_pos_of(car.sel);
-    }
-    else
-      carousel_close();
+// Clock tab: A sets the time.
+static void keypress_menu_clock(unsigned newkeys) {
+  if (newkeys & KEY_BUTTA) {
+    timestamp2date(clock_now(), &spop.rtcpop.val);
+    spop.rtcpop.selector = 0;
+    spop.rtcpop.title = "Set clock";
+    spop.rtcpop.callback = clock_set_callback;
   }
 }
 
@@ -3349,7 +3443,7 @@ static void keypress_menu_tools(unsigned newkeys) {
   if (newkeys & KEY_BUTTUP)
     smenu.tools.selector = MAX(0, smenu.tools.selector - 1);
   if (newkeys & KEY_BUTTDOWN)
-    smenu.tools.selector = MIN(ToolsEntries - 1, smenu.tools.selector + 1);
+    smenu.tools.selector = MIN(ToolsMAX - 1, smenu.tools.selector + 1);
 
   if (newkeys & KEY_BUTTA) {
     if (smenu.tools.selector == ToolsSDRAMTest) {
@@ -3421,8 +3515,6 @@ static void keypress_menu_tools(unsigned newkeys) {
       spop.qpop.clear_popup_ok = true;
     }
     #endif
-    else if (smenu.tools.selector == ToolsCarousel)
-      carousel_open();
   }
 }
 
@@ -3472,11 +3564,13 @@ void menu_keypress(unsigned newkeys) {
     if (newkeys & KEY_BUTTB) {
       spop.rtcpop.selector = 0;
       spop.rtcpop.callback = NULL;
+      spop.rtcpop.title = NULL;
     }
     else if (newkeys & KEY_BUTTA) {
       spop.rtcpop.selector = 0;
       spop.rtcpop.callback();
       spop.rtcpop.callback = NULL;
+      spop.rtcpop.title = NULL;
     }
   }
   else if (spop.pop_num) {
@@ -3503,8 +3597,6 @@ void menu_keypress(unsigned newkeys) {
       };
       keyfns[spop.pop_num](newkeys);
     }
-  } else if (car.active) {
-    keypress_carousel(newkeys);
   } else {
     // Menu change via trigger buttons
     int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
@@ -3522,6 +3614,8 @@ void menu_keypress(unsigned newkeys) {
       #ifdef SUPPORT_NORGAMES
       keypress_menu_norbrowse,
       #endif
+      keypress_menu_browse,       // DS screen tab, same list as the carousel
+      keypress_menu_clock,
       keypress_menu_settings,
       keypress_menu_uisettings,
       keypress_menu_tools,

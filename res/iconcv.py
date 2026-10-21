@@ -45,6 +45,8 @@ iconlst = [
   ("ICON_INFO", None),
   ("ICON_HFOLDER", None),
   ("ICON_HFILE", None),
+  ("ICON_CLOCK", None),
+  ("ICON_DSSCREEN", None),
 ]
 
 print("enum {")

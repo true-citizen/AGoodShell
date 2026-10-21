@@ -102,6 +102,9 @@ uint8_t rtcspeed_default = 3;
 
 uint32_t rtcvalue_default = 45568800U;
 
+// Last time the user set in the clock tab (the cart has no RTC): 2026-01-01.
+uint32_t clock_ts_default = 820540800U;
+
 // Setting loading/saving routines
 bool save_ui_settings() {
   // Create the directory (just in case it doesn't exist
@@ -122,8 +125,10 @@ bool save_ui_settings() {
     "langcode=%c%c\n"
     "recent_menu=%u\n"
     "anim_speed=%u\n"
-    "hide_hidden=%u\n",
-    menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden);
+    "hide_hidden=%u\n"
+    "clock_ts=%lu\n",
+    menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden,
+    clock_ts_default);
 
   UINT wrbytes;
   FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
@@ -228,6 +233,8 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
   if (!strcmp(var, "langcode")) {
     uint16_t code = ((uint8_t)value[0]) | (((uint8_t)value[1]) << 8);
     lang_id = lang_lookup(code);
+  } else if (!strcmp(var, "clock_ts")) {
+    clock_ts_default = parseuint(value);
   } else {
     static const struct {
       const char *s;
