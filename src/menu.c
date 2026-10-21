@@ -47,6 +47,7 @@ extern bool fastew;
 extern bool slowsd;
 
 enum {
+  MENUTAB_HOME,          // DS-style start menu (default tab).
   MENUTAB_RECENT,        // Browses recently loaded ROMs (can be disabled / hidden)
   MENUTAB_ROMBROWSE,     // Browses ROMs and launches games (carousel).
   #ifdef SUPPORT_NORGAMES
@@ -89,6 +90,7 @@ enum {
 #define BG_COLOR         17
 #define FT_COLOR         18
 #define HI_COLOR         19
+#define ACC_COLOR        20      // Accent color (home screen selection)
 #define IGM_PAL_FG      240
 #define IGM_PAL_BG      241
 #define IGM_PAL_HI      242
@@ -256,6 +258,8 @@ const struct {
   { RGB2GBA(0x222222), RGB2GBA(0x444444), RGB2GBA(0xeeeeee), RGB2GBA(0x737573), RGB2GBA(0xaaaaaa), RGB2GBA(0x606060) }, // Dark
 };
 #define THEME_COUNT (sizeof(themes) / sizeof(themes[0]))
+#define THEME_LIGHT  0                   // Indexes in themes[], used by the home screen
+#define THEME_DARK   (THEME_COUNT - 1)
 
 typedef struct {
   // ROM information
@@ -344,6 +348,12 @@ static struct {
     int selector;                 // Render panel
     char tstr[64];                // Temp message render
   } info;
+
+  // Home screen
+  struct {
+    int sel;                      // Selected button (HB_*)
+    int row2;                     // Middle row button to return to (HB_STUB1/2)
+  } home;
 } smenu;
 
 // Same but for popups.
@@ -1641,6 +1651,13 @@ static void clock_set_callback() {
   save_ui_settings();
 }
 
+static void clock_open_setter() {
+  timestamp2date(clock_now(), &spop.rtcpop.val);
+  spop.rtcpop.selector = 0;
+  spop.rtcpop.title = "Set clock";
+  spop.rtcpop.callback = clock_set_callback;
+}
+
 static const char *const clk_wdays[7] = {
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 };
@@ -1727,6 +1744,171 @@ void render_clock(volatile uint8_t *frame) {
     npf_snprintf(buf, sizeof(buf), "%u", dd);
     draw_central_text(buf, frame, x + CAL_COL_W / 2, y);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Home screen, modeled after the Nintendo DS (Phat) start menu: big buttons on
+// a grid background, a selection marked by blue corner brackets and three
+// small buttons at the bottom (theme, settings, time). Plain shapes only.
+// ---------------------------------------------------------------------------
+
+void reload_theme(unsigned thnum);
+
+enum {
+  HB_FLASH = 0,      // Games stored in the cart flash (fast loading ROMs)
+  HB_STUB1,          // Placeholder
+  HB_STUB2,          // Placeholder
+  HB_CAROUSEL,       // Opens the carousel
+  HB_THEME,          // Switches the light/dark theme
+  HB_SETTINGS,       // Opens the settings tab
+  HB_TIME,           // Sets the clock
+  HB_COUNT,
+};
+
+static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
+  [HB_FLASH]    = {   8,  22, 232,  58 },
+  [HB_STUB1]    = {   8,  62, 118,  98 },
+  [HB_STUB2]    = { 122,  62, 232,  98 },
+  [HB_CAROUSEL] = {   8, 102, 232, 132 },
+  [HB_THEME]    = {   8, 136,  56, 158 },
+  [HB_SETTINGS] = {  96, 136, 144, 158 },
+  [HB_TIME]     = { 184, 136, 232, 158 },
+};
+
+// Where each button leads to with up, down, left, right (-1: nowhere).
+static const int8_t home_nav[HB_COUNT][4] = {
+  [HB_FLASH]    = { -1,          HB_STUB1,    -1,          -1 },
+  [HB_STUB1]    = { HB_FLASH,    HB_CAROUSEL, -1,          HB_STUB2 },
+  [HB_STUB2]    = { HB_FLASH,    HB_CAROUSEL, HB_STUB1,    -1 },
+  [HB_CAROUSEL] = { HB_STUB1,    HB_SETTINGS, -1,          -1 },
+  [HB_THEME]    = { HB_CAROUSEL, -1,          -1,          HB_SETTINGS },
+  [HB_SETTINGS] = { HB_CAROUSEL, -1,          HB_THEME,    HB_TIME },
+  [HB_TIME]     = { HB_CAROUSEL, -1,          HB_SETTINGS, -1 },
+};
+
+// Filled circle.
+static void home_disc(volatile uint8_t *frame, int cx, int cy, int r, uint8_t color) {
+  for (int dy = -r; dy <= r; dy++) {
+    int w = 0;
+    while ((w + 1) * (w + 1) <= r * r - dy * dy)
+      w++;
+    car_span(frame, cy + dy, cx - w, cx + w + 1, color);
+  }
+}
+
+// Button face: thin dark outline, light bevel on the top and left sides.
+static void home_button(volatile uint8_t *frame, int b) {
+  const int x0 = home_rects[b].x0, y0 = home_rects[b].y0, x1 = home_rects[b].x1, y1 = home_rects[b].y1;
+  car_rect(frame, x0, y0, x1, y1, HI_COLOR);
+  car_rect(frame, x0 + 1, y0 + 1, x1 - 1, y0 + 2, BG_COLOR);
+  car_rect(frame, x0 + 1, y0 + 1, x0 + 2, y1 - 1, BG_COLOR);
+  car_outline(frame, x0, y0, x1, y1, 1, FT_COLOR);
+}
+
+// Corner brackets around the selected button.
+static void home_brackets(volatile uint8_t *frame, int b) {
+  const int x0 = home_rects[b].x0 - 2, y0 = home_rects[b].y0 - 2;
+  const int x1 = home_rects[b].x1 + 2, y1 = home_rects[b].y1 + 2;
+  const int len = 10, th = 2;
+  car_rect(frame, x0, y0, x0 + len, y0 + th, ACC_COLOR);
+  car_rect(frame, x0, y0, x0 + th, y0 + len, ACC_COLOR);
+  car_rect(frame, x1 - len, y0, x1, y0 + th, ACC_COLOR);
+  car_rect(frame, x1 - th, y0, x1, y0 + len, ACC_COLOR);
+  car_rect(frame, x0, y1 - th, x0 + len, y1, ACC_COLOR);
+  car_rect(frame, x0, y1 - len, x0 + th, y1, ACC_COLOR);
+  car_rect(frame, x1 - len, y1 - th, x1, y1, ACC_COLOR);
+  car_rect(frame, x1 - th, y1 - len, x1, y1, ACC_COLOR);
+}
+
+// Game cartridge (GBA) and memory chip (flash) shapes, 32x22.
+static void home_icon_cart(volatile uint8_t *frame, int x, int y) {
+  car_rect(frame, x + 4, y, x + 28, y + 4, FT_COLOR);
+  car_rect(frame, x, y + 4, x + 32, y + 22, FT_COLOR);
+  car_rect(frame, x + 6, y + 8, x + 26, y + 18, BG_COLOR);
+}
+
+static void home_icon_chip(volatile uint8_t *frame, int x, int y) {
+  for (int i = 0; i < 4; i++) {                       // Pins on both sides
+    car_rect(frame, x + 4, y + 2 + i * 5, x + 8, y + 4 + i * 5, FT_COLOR);
+    car_rect(frame, x + 24, y + 2 + i * 5, x + 28, y + 4 + i * 5, FT_COLOR);
+  }
+  car_rect(frame, x + 8, y, x + 24, y + 22, FT_COLOR);
+  car_rect(frame, x + 11, y + 3, x + 21, y + 19, HI_COLOR);
+}
+
+// Small icons for the bottom buttons, centered at (cx, cy).
+static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
+  if (menu_theme == THEME_DARK) {                     // Moon: a disc with a bite
+    home_disc(frame, cx, cy, 8, FT_COLOR);
+    home_disc(frame, cx + 5, cy - 3, 7, BG_COLOR);
+  } else {                                            // Sun: a disc with rays
+    home_disc(frame, cx, cy, 4, FT_COLOR);
+    car_rect(frame, cx - 1, cy - 9, cx + 1, cy - 6, FT_COLOR);
+    car_rect(frame, cx - 1, cy + 6, cx + 1, cy + 9, FT_COLOR);
+    car_rect(frame, cx - 9, cy - 1, cx - 6, cy + 1, FT_COLOR);
+    car_rect(frame, cx + 6, cy - 1, cx + 9, cy + 1, FT_COLOR);
+    for (int i = -1; i <= 1; i += 2)
+      for (int j = -1; j <= 1; j += 2)
+        car_rect(frame, cx + i * 6 - 1, cy + j * 6 - 1, cx + i * 6 + 1, cy + j * 6 + 1, FT_COLOR);
+  }
+}
+
+static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
+  car_rect(frame, cx - 7, cy - 10, cx + 7, cy + 10, FT_COLOR);      // Two screens
+  car_rect(frame, cx - 5, cy - 8, cx + 5, cy - 1, BG_COLOR);
+  car_rect(frame, cx - 5, cy + 2, cx + 5, cy + 8, BG_COLOR);
+}
+
+static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
+  home_disc(frame, cx - 7, cy - 7, 3, FT_COLOR);                    // Alarm bells
+  home_disc(frame, cx + 7, cy - 7, 3, FT_COLOR);
+  home_disc(frame, cx, cy + 1, 8, FT_COLOR);
+  home_disc(frame, cx, cy + 1, 6, BG_COLOR);
+  car_rect(frame, cx, cy - 4, cx + 1, cy + 2, FT_COLOR);            // Hands
+  car_rect(frame, cx, cy + 1, cx + 4, cy + 2, FT_COLOR);
+}
+
+void render_home(volatile uint8_t *frame) {
+  // Grid background.
+  for (int y = 48; y < SCREEN_HEIGHT; y += 32)
+    car_span(frame, y, 0, SCREEN_WIDTH, HI_COLOR);
+  for (int x = 0; x < SCREEN_WIDTH; x += 32)
+    car_rect(frame, x, 16, x + 1, SCREEN_HEIGHT, HI_COLOR);
+
+  for (int b = HB_FLASH; b <= HB_CAROUSEL; b++)
+    home_button(frame, b);
+
+  char buf[24];
+  const int tcx = (home_rects[HB_FLASH].x0 + 44 + home_rects[HB_FLASH].x1) / 2;
+
+  // Flash games: games written to the cart memory (fast loading ROMs).
+  home_icon_chip(frame, home_rects[HB_FLASH].x0 + 8, home_rects[HB_FLASH].y0 + 7);
+  draw_central_text("Flash games", frame, tcx, home_rects[HB_FLASH].y0 + 2);
+  #ifdef SUPPORT_NORGAMES
+  npf_snprintf(buf, sizeof(buf), "%u games", (unsigned)smenu.fbrowser.maxentries);
+  #else
+  npf_snprintf(buf, sizeof(buf), "Not on this cart");
+  #endif
+  draw_central_text(buf, frame, tcx, home_rects[HB_FLASH].y0 + 18);
+
+  // Placeholders: a stub icon (black rectangle) and a name.
+  for (int b = HB_STUB1; b <= HB_STUB2; b++) {
+    const int x0 = home_rects[b].x0, y0 = home_rects[b].y0;
+    car_rect(frame, x0 + 8, y0 + 8, x0 + 36, y0 + 28, 0);
+    npf_snprintf(buf, sizeof(buf), "Stub %d", b - HB_STUB1 + 1);
+    draw_central_text(buf, frame, (x0 + 40 + home_rects[b].x1) / 2, y0 + 10);
+  }
+
+  // Carousel.
+  home_icon_cart(frame, home_rects[HB_CAROUSEL].x0 + 8, home_rects[HB_CAROUSEL].y0 + 4);
+  draw_central_text("Game carousel", frame, tcx, home_rects[HB_CAROUSEL].y0 + 7);
+
+  // Bottom row: theme, settings and time.
+  home_icon_theme(frame, (home_rects[HB_THEME].x0 + home_rects[HB_THEME].x1) / 2, 147);
+  home_icon_settings(frame, (home_rects[HB_SETTINGS].x0 + home_rects[HB_SETTINGS].x1) / 2, 147);
+  home_icon_time(frame, (home_rects[HB_TIME].x0 + home_rects[HB_TIME].x1) / 2, 147);
+
+  home_brackets(frame, smenu.home.sel);
 }
 
 void render_fw_flash_popup(volatile uint8_t *frame) {
@@ -2326,6 +2508,7 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[BG_COLOR] = themes[thnum].bg_color;
   MEM_PALETTE[FT_COLOR] = themes[thnum].ft_color;
   MEM_PALETTE[HI_COLOR] = themes[thnum].hi_color;
+  MEM_PALETTE[ACC_COLOR] = RGB2GBA(0x3f7fd8);
   // In-game menu palette
   MEM_PALETTE[IGM_PAL_FG] = themes[thnum].fg_color;
   MEM_PALETTE[IGM_PAL_BG] = themes[thnum].bg_color;
@@ -2355,6 +2538,7 @@ static const struct {
 // previous rendered frame (for animations and similar stuff).
 // Icon shown in the tab bar for each tab.
 static const uint8_t tab_icons[MENUTAB_MAX] = {
+  [MENUTAB_HOME]       = ICON_HOME,
   [MENUTAB_RECENT]     = ICON_RECENT,
   [MENUTAB_ROMBROWSE]  = ICON_DISK,
   #ifdef SUPPORT_NORGAMES
@@ -2368,6 +2552,11 @@ static const uint8_t tab_icons[MENUTAB_MAX] = {
   [MENUTAB_INFO]       = ICON_INFO,
 };
 
+// The recent ROMs tab is only shown when enabled and not empty.
+static bool tab_visible(unsigned tab) {
+  return tab != MENUTAB_RECENT || (recent_menu && smenu.recent.maxentries);
+}
+
 void menu_render(unsigned fcnt) {
   objnum = 0;
   render_fcnt = fcnt;
@@ -2377,12 +2566,15 @@ void menu_render(unsigned fcnt) {
   dma_memset16(&frame[0], dup8(FG_COLOR), SCREEN_WIDTH*16/2);
 
   // Render icon bar
-  int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
-  for (unsigned i = mintab; i < MENUTAB_MAX; i++)
+  for (unsigned i = 0, slot = 0; i < MENUTAB_MAX; i++) {
+    if (!tab_visible(i))
+      continue;
     if (i == smenu.menu_tab)
-      render_icon((i - mintab)*16, 0, tab_icons[i]);
+      render_icon(slot*16, 0, tab_icons[i]);
     else
-      render_icon_trans((i - mintab)*16, 0, tab_icons[i]);
+      render_icon_trans(slot*16, 0, tab_icons[i]);
+    slot++;
+  }
 
   // Render the main area
   dma_memset16(&frame[16*SCREEN_WIDTH], dup8(BG_COLOR), SCREEN_WIDTH*(SCREEN_HEIGHT-16) / 2);
@@ -2397,6 +2589,7 @@ void menu_render(unsigned fcnt) {
       spop.anim += fcnt * animspd_lut[anim_speed];
     } else {
       static const t_mrender_fn renderfns[] = {
+        render_home,
         render_recent,
         render_carousel,
         #ifdef SUPPORT_NORGAMES
@@ -2457,7 +2650,9 @@ void menu_init(int sram_testres) {
 
   reload_theme(menu_theme);
 
-  smenu.menu_tab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
+  smenu.menu_tab = MENUTAB_HOME;
+  smenu.home.sel = HB_CAROUSEL;
+  smenu.home.row2 = HB_STUB1;
 
   // Load icons into VRAM
   dma_memcpy16(MEM_VRAM_OBJS, icons_img, sizeof(icons_img) / 2);
@@ -3257,12 +3452,59 @@ static void keypress_menu_browse(unsigned newkeys) {
 
 // Clock tab: A sets the time.
 static void keypress_menu_clock(unsigned newkeys) {
-  if (newkeys & KEY_BUTTA) {
-    timestamp2date(clock_now(), &spop.rtcpop.val);
-    spop.rtcpop.selector = 0;
-    spop.rtcpop.title = "Set clock";
-    spop.rtcpop.callback = clock_set_callback;
+  if (newkeys & KEY_BUTTA)
+    clock_open_setter();
+}
+
+// Home screen: D-pad moves the selection, A activates the button.
+static void home_activate(int b) {
+  switch (b) {
+  case HB_FLASH:
+    #ifdef SUPPORT_NORGAMES
+    smenu.menu_tab = MENUTAB_NORBROWSE;
+    #else
+    spop.alert_msg = "No flash games on this cart";
+    #endif
+    break;
+  case HB_STUB1:
+  case HB_STUB2:
+    spop.alert_msg = "Not implemented yet";
+    break;
+  case HB_CAROUSEL:
+    smenu.menu_tab = MENUTAB_ROMBROWSE;
+    break;
+  case HB_THEME:
+    menu_theme = (menu_theme == THEME_DARK) ? THEME_LIGHT : THEME_DARK;
+    reload_theme(menu_theme);
+    save_ui_settings();
+    break;
+  case HB_SETTINGS:
+    smenu.menu_tab = MENUTAB_SETTINGS;
+    break;
+  case HB_TIME:
+    clock_open_setter();
+    break;
   }
+}
+
+static void keypress_menu_home(unsigned newkeys) {
+  static const uint16_t dirkeys[4] = { KEY_BUTTUP, KEY_BUTTDOWN, KEY_BUTTLEFT, KEY_BUTTRIGHT };
+  const int src = smenu.home.sel;
+  for (unsigned d = 0; d < 4; d++) {
+    if (!(newkeys & dirkeys[d]) || home_nav[src][d] < 0)
+      continue;
+    int dst = home_nav[src][d];
+    // Moving vertically through the middle row returns to the last used button.
+    if (dst == HB_STUB1 && (src == HB_FLASH || src == HB_CAROUSEL))
+      dst = smenu.home.row2;
+    smenu.home.sel = dst;
+    if (dst == HB_STUB1 || dst == HB_STUB2)
+      smenu.home.row2 = dst;
+    break;
+  }
+
+  if (newkeys & KEY_BUTTA)
+    home_activate(smenu.home.sel);
 }
 
 #ifdef SUPPORT_NORGAMES
@@ -3599,16 +3841,23 @@ void menu_keypress(unsigned newkeys) {
     }
   } else {
     // Menu change via trigger buttons
-    int mintab = (recent_menu && smenu.recent.maxentries) ? MENUTAB_RECENT : MENUTAB_ROMBROWSE;
-    if (newkeys & KEY_BUTTL)
-      smenu.menu_tab = MAX((int)smenu.menu_tab - 1, mintab);
-    else if (newkeys & KEY_BUTTR)
-      smenu.menu_tab = MIN(smenu.menu_tab + 1, MENUTAB_MAX - 1);
+    int ntab = smenu.menu_tab;
+    if (newkeys & KEY_BUTTL) {
+      do ntab--; while (ntab >= 0 && !tab_visible(ntab));
+      if (ntab >= 0)
+        smenu.menu_tab = ntab;
+    }
+    else if (newkeys & KEY_BUTTR) {
+      do ntab++; while (ntab < MENUTAB_MAX && !tab_visible(ntab));
+      if (ntab < MENUTAB_MAX)
+        smenu.menu_tab = ntab;
+    }
 
     if (newkeys & (KEY_BUTTL | KEY_BUTTR | KEY_BUTTUP | KEY_BUTTDOWN))
       smenu.anim_state = 0;
 
     const t_mkeyupd_fn keyfns[] = {
+      keypress_menu_home,
       keypress_menu_recent,
       keypress_menu_browse,
       #ifdef SUPPORT_NORGAMES
