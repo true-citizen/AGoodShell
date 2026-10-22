@@ -25,33 +25,27 @@ for y in range(im.height):
 
 nicons = im.size[0] // 16
 
-pal = sorted(set([x[1] for x in im.getcolors() if x[1][3] > 128]))
-
+# Icons used by the firmware, in the order of the generated enum. Their image is
+# the column of icons.png at the given index. Artwork in icons.png that no menu
+# uses anymore (the old tab bar icons and folder/hidden file icons) is not
+# converted, to not waste ROM.
 iconlst = [
-  ("ICON_FOLDER", None),
-  ("ICON_BINFILE", None),
-  ("ICON_UPDFILE", None),
-  ("ICON_GBCART", None),
-  ("ICON_GBCCART", None),
-  ("ICON_GBACART", None),
-  ("ICON_SMSCART", None),
-  ("ICON_NESCART", None),
-  ("ICON_RECENT", None),
-  ("ICON_DISK", None),
-  ("ICON_FLASH", "SUPPORT_NORGAMES"),
-  ("ICON_SETTINGS", None),
-  ("ICON_UILANG_SETTINGS", None),
-  ("ICON_TOOLS", None),
-  ("ICON_INFO", None),
-  ("ICON_HFOLDER", None),
-  ("ICON_HFILE", None),
-  ("ICON_CLOCK", None),
-  ("ICON_DSSCREEN", None),
-  ("ICON_HOME", None),
+  ("ICON_BINFILE", None, 1),
+  ("ICON_UPDFILE", None, 2),
+  ("ICON_GBCART", None, 3),
+  ("ICON_GBCCART", None, 4),
+  ("ICON_GBACART", None, 5),
+  ("ICON_SMSCART", None, 6),
+  ("ICON_NESCART", None, 7),
+  ("ICON_DISK", None, 9),
 ]
 
+used = [x[2] for x in iconlst]
+pal = sorted(set(im.crop((n*16, 0, n*16+16, 16)).getpixel((x, y)) for n in used for x in range(16) for y in range(16)
+                 if im.crop((n*16, 0, n*16+16, 16)).getpixel((x, y))[3] > 128))
+
 print("enum {")
-for n, c in iconlst:
+for n, c, _ in iconlst:
   if c:
     print("#ifdef %s" % c)
   print(" %s," % n)
@@ -61,9 +55,9 @@ print("};")
 
 print("const uint8_t icons_img[][4][8][8] = {")
 
-for n in range(nicons):
-  if iconlst[n][1]:
-    print("#ifdef %s" % iconlst[n][1])
+for k, (_, cond, n) in enumerate(iconlst):
+  if cond:
+    print("#ifdef %s" % cond)
   print("  {")
   for subobj in range(4):
     sx, sy = subobj & 1, subobj >> 1
@@ -81,7 +75,7 @@ for n in range(nicons):
       print("     {" + ",".join("0x%02x" % x for x in line) + "},")
     print("    },")
   print("  },")
-  if iconlst[n][1]:
+  if cond:
     print("#endif")
 print("};")
 

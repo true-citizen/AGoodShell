@@ -115,6 +115,7 @@ enum {
 #define CLK_PIN          42
 #define CLK_TICK         43      // Clock numbers
 #define CLK_FGRID        46      // Grid lines over the clock face
+#define CAL_BG           47      // Calendar and clock face background (white, dark in the dark theme)
 #define GRID_COLOR       44      // Background grid lines (black in the dark theme)
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
@@ -203,12 +204,13 @@ enum {
 #define DSS_TITLE_H      24
 // Clock tab:
 #define CLK_FACE_X       8       // Analog clock face: 6x6 tiles of 16x16, centered
-#define CLK_FACE_Y       32
+#define CLK_FACE_Y       40
 #define CLK_FACE_SZ      96
 #define CLK_CX           (CLK_FACE_X + CLK_FACE_SZ / 2)   // Pin position
 #define CLK_CY           (CLK_FACE_Y + CLK_FACE_SZ / 2)
 #define CAL_X           120      // Calendar: 7 columns of 16x16 tiles up to the screen edge
 #define CAL_TILE         16
+#define CAL_Y            24      // Calendar top: title row, weekday row and up to 6 week rows
 
 enum {
   SettTitle1 = 0,
@@ -1791,6 +1793,7 @@ static const uint8_t bg_tiles[BG_COUNT][2] = { { 16, 16 }, { 48, 48 } };
 // Grid lines sit at x + offset multiple of the tile width: the clock tab grid is
 // shifted 8 pixels left and the home grid 24 pixels left.
 static const uint8_t bg_xoff[BG_COUNT] = { 8, 24 };
+static const uint8_t bg_yoff[BG_COUNT] = { 8, 0 };     // The clock tab grid is also shifted 8 pixels down
 static uint16_t bg_rows[BG_COUNT][4][SCREEN_WIDTH / 2];   // Bit 0: odd row, bit 1: grid line
 
 static void bg_init(void) {
@@ -1809,7 +1812,7 @@ static void bg_init(void) {
 static void ds_background(volatile uint8_t *frame, unsigned grid) {
   const unsigned th = bg_tiles[grid][1];
   for (int y = 16; y < SCREEN_HEIGHT; y++)
-    dma_memcpy16(&frame[y * SCREEN_WIDTH], bg_rows[grid][(((y - 16) % th) ? 0 : 2) | (y & 1)], SCREEN_WIDTH / 2);
+    dma_memcpy16(&frame[y * SCREEN_WIDTH], bg_rows[grid][(((y - 16 + bg_yoff[grid]) % th) ? 0 : 2) | (y & 1)], SCREEN_WIDTH / 2);
 }
 
 // Text of a given color, centered at x.
@@ -1911,7 +1914,7 @@ static void clock_glyph(volatile uint8_t *frame, int x, int y, unsigned g) {
 
 static void clock_face(volatile uint8_t *frame) {
   car_rect(frame, CLK_FACE_X, CLK_FACE_Y, CLK_FACE_X + CLK_FACE_SZ, CLK_FACE_Y + CLK_FACE_SZ, 0);     // Black square frame
-  car_rect(frame, CLK_FACE_X + 2, CLK_FACE_Y + 2, CLK_FACE_X + CLK_FACE_SZ - 2, CLK_FACE_Y + CLK_FACE_SZ - 2, BAR_WHITE);
+  car_rect(frame, CLK_FACE_X + 2, CLK_FACE_Y + 2, CLK_FACE_X + CLK_FACE_SZ - 2, CLK_FACE_Y + CLK_FACE_SZ - 2, CAL_BG);
 
   // The background grid, continued over the face (solid lines, no scanlines).
   for (int i = 1; i < CLK_FACE_SZ / 16; i++) {
@@ -1934,8 +1937,6 @@ static void clock_face(volatile uint8_t *frame) {
 
 void render_clock(volatile uint8_t *frame) {
   ds_background(frame, BG_CLOCK);
-  dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
-  draw_text_ovf("A: Set time", frame, 8, 144, SCREEN_WIDTH - 16);
 
   const uint32_t now = clock_now();
   t_dec_date d;
@@ -1949,39 +1950,40 @@ void render_clock(volatile uint8_t *frame) {
   clock_needle(frame, d.min * 6, 30, CLK_HAND);
   clock_needle(frame, d.sec * 6, 36, ACC_COLOR);
   car_rect(frame, CLK_CX - 2, CLK_CY - 2, CLK_CX + 3, CLK_CY + 3, CLK_PIN);
+  text_center(frame, "A: Set time", CLK_FACE_X + CLK_FACE_SZ / 2, 140, FT_COLOR);     // Below the face, where the footer bar was
 
   // Calendar, on the tile grid: a title row, a weekday header row and as many
   // week rows as the month needs. Sunday and Saturday columns are tinted.
   const unsigned first = clock_wday(date2timestamp(&(t_dec_date){ .year = d.year, .month = d.month, .day = 1 }));
   const unsigned weeks = (first + clock_dim(year, month) + 6) / 7;
-  const int bottom = 16 + (2 + weeks) * CAL_TILE;
-  car_rect(frame, CAL_X, 16, CAL_X + 7 * CAL_TILE, bottom, BAR_WHITE);
-  car_rect(frame, CAL_X, 48, CAL_X + CAL_TILE, bottom, CAL_PINK);
-  car_rect(frame, CAL_X + 6 * CAL_TILE, 48, CAL_X + 7 * CAL_TILE, bottom, CAL_LBLUE);
+  const int bottom = CAL_Y + (2 + weeks) * CAL_TILE;
+  car_rect(frame, CAL_X, CAL_Y, CAL_X + 7 * CAL_TILE, bottom, CAL_BG);
+  car_rect(frame, CAL_X, CAL_Y + 32, CAL_X + CAL_TILE, bottom, CAL_PINK);
+  car_rect(frame, CAL_X + 6 * CAL_TILE, CAL_Y + 32, CAL_X + 7 * CAL_TILE, bottom, CAL_LBLUE);
   // Weekday header cells.
   for (unsigned c = 0; c < 7; c++) {
     const int x = CAL_X + c * CAL_TILE;
-    car_rect(frame, x, 32, x + CAL_TILE, 48, c == 0 ? CAL_HRED : c == 6 ? CAL_HBLUE : CAL_HGRAY);
+    car_rect(frame, x, CAL_Y + 16, x + CAL_TILE, CAL_Y + 32, c == 0 ? CAL_HRED : c == 6 ? CAL_HBLUE : CAL_HGRAY);
   }
   // Grid lines on the same 16x16 grid as the background (solid, no scanlines),
   // drawn over the header cells too.
   for (int x = CAL_X; x < CAL_X + 7 * CAL_TILE; x += CAL_TILE)
-    car_rect(frame, x, 32, x + 1, bottom, CAL_LINE);
-  for (int y = 32; y < bottom; y += CAL_TILE)
+    car_rect(frame, x, CAL_Y + 16, x + 1, bottom, CAL_LINE);
+  for (int y = CAL_Y + 16; y < bottom; y += CAL_TILE)
     car_span(frame, y, CAL_X, CAL_X + 7 * CAL_TILE, CAL_LINE);
-  car_outline(frame, CAL_X, 16, CAL_X + 7 * CAL_TILE, bottom, 1, CAL_LINE);
+  car_outline(frame, CAL_X, CAL_Y, CAL_X + 7 * CAL_TILE, bottom, 1, CAL_LINE);
 
   npf_snprintf(buf, sizeof(buf), "%02d/%d", month, 2000 + year);
-  text_center(frame, buf, CAL_X + CAL_TILE * 7 / 2, 16, CAL_TXT);
+  text_center(frame, buf, CAL_X + CAL_TILE * 7 / 2, CAL_Y, CAL_TXT);
   for (unsigned c = 0; c < 7; c++) {
     const int x = CAL_X + c * CAL_TILE;
-    text_center(frame, clk_wdays_short[c], x + CAL_TILE / 2, 32, BAR_WHITE);
+    text_center(frame, clk_wdays_short[c], x + CAL_TILE / 2, CAL_Y + 16, BAR_WHITE);
   }
 
   for (unsigned dd = 1; dd <= clock_dim(year, month); dd++) {
     const unsigned idx = first + dd - 1;
     const int x = CAL_X + (idx % 7) * CAL_TILE;
-    const int y = 48 + (idx / 7) * CAL_TILE;
+    const int y = CAL_Y + 32 + (idx / 7) * CAL_TILE;
     uint8_t color = (idx % 7) == 0 ? CAL_RED : (idx % 7) == 6 ? CAL_BLUE : CAL_TXT;
     if (dd == day) {
       car_rrect(frame, x + 1, y + 1, x + CAL_TILE - 1, y + CAL_TILE - 1, ACC_COLOR);
@@ -2977,19 +2979,38 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[BAR_GREEN] = RGB2GBA(0x30d040);
   MEM_PALETTE[BAR_ORANGE] = RGB2GBA(0xf08020);
   MEM_PALETTE[BAR_WHITE] = 0x7FFF;
-  MEM_PALETTE[CAL_TXT]   = RGB2GBA(0x303038);
-  MEM_PALETTE[CAL_RED]   = RGB2GBA(0xd01c1c);
-  MEM_PALETTE[CAL_BLUE]  = RGB2GBA(0x1c3cd0);
-  MEM_PALETTE[CAL_HRED]  = RGB2GBA(0xd83030);
-  MEM_PALETTE[CAL_HBLUE] = RGB2GBA(0x3058d8);
-  MEM_PALETTE[CAL_HGRAY] = RGB2GBA(0x606068);
-  MEM_PALETTE[CAL_PINK]  = RGB2GBA(0xf8c8dc);
-  MEM_PALETTE[CAL_LBLUE] = RGB2GBA(0xc8d8f8);
-  MEM_PALETTE[CAL_LINE]  = RGB2GBA(0x9098a0);
-  MEM_PALETTE[CLK_HAND]  = RGB2GBA(0x797979);   // Needle and pin colors from TWiLight Menu++
-  MEM_PALETTE[CLK_PIN]   = RGB2GBA(0x494949);
-  MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xb2b2b2);   // Numbers and grid of the TWiLight Menu++ clock face
-  MEM_PALETTE[CLK_FGRID] = RGB2GBA(0xd3d3d3);
+  if (dark) {
+    // Dark theme: dark calendar and clock face, light text, black grid lines.
+    MEM_PALETTE[CAL_BG]    = RGB2GBA(0x2a2e36);
+    MEM_PALETTE[CAL_TXT]   = RGB2GBA(0xe0e2e8);
+    MEM_PALETTE[CAL_RED]   = RGB2GBA(0xff6868);
+    MEM_PALETTE[CAL_BLUE]  = RGB2GBA(0x78a0ff);
+    MEM_PALETTE[CAL_HRED]  = RGB2GBA(0x982020);
+    MEM_PALETTE[CAL_HBLUE] = RGB2GBA(0x203c98);
+    MEM_PALETTE[CAL_HGRAY] = RGB2GBA(0x404048);
+    MEM_PALETTE[CAL_PINK]  = RGB2GBA(0x3c2830);
+    MEM_PALETTE[CAL_LBLUE] = RGB2GBA(0x262e48);
+    MEM_PALETTE[CAL_LINE]  = 0;
+    MEM_PALETTE[CLK_HAND]  = RGB2GBA(0xa8a8a8);
+    MEM_PALETTE[CLK_PIN]   = RGB2GBA(0xd8d8d8);
+    MEM_PALETTE[CLK_TICK]  = RGB2GBA(0x70747c);
+    MEM_PALETTE[CLK_FGRID] = RGB2GBA(0x1a1c22);
+  } else {
+    MEM_PALETTE[CAL_BG]    = 0x7FFF;
+    MEM_PALETTE[CAL_TXT]   = RGB2GBA(0x303038);
+    MEM_PALETTE[CAL_RED]   = RGB2GBA(0xd01c1c);
+    MEM_PALETTE[CAL_BLUE]  = RGB2GBA(0x1c3cd0);
+    MEM_PALETTE[CAL_HRED]  = RGB2GBA(0xd83030);
+    MEM_PALETTE[CAL_HBLUE] = RGB2GBA(0x3058d8);
+    MEM_PALETTE[CAL_HGRAY] = RGB2GBA(0x606068);
+    MEM_PALETTE[CAL_PINK]  = RGB2GBA(0xf8c8dc);
+    MEM_PALETTE[CAL_LBLUE] = RGB2GBA(0xc8d8f8);
+    MEM_PALETTE[CAL_LINE]  = RGB2GBA(0x9098a0);
+    MEM_PALETTE[CLK_HAND]  = RGB2GBA(0x797979);   // Needle and pin colors from TWiLight Menu++
+    MEM_PALETTE[CLK_PIN]   = RGB2GBA(0x494949);
+    MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xb2b2b2);   // Numbers and grid of the TWiLight Menu++ clock face
+    MEM_PALETTE[CLK_FGRID] = RGB2GBA(0xd3d3d3);
+  }
   // Scanline rows are a bit closer to the text color than the others.
   MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
   const uint16_t grid = dark ? 0 : themes[thnum].hi_color;
