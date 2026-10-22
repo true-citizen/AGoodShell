@@ -2025,9 +2025,9 @@ static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
   [HB_RECENT]   = {  26,  66, 118, 110 },
   [HB_HWTEST]   = { 122,  66, 214, 110 },
   [HB_CAROUSEL] = {  26, 114, 214, 136 },
-  [HB_THEME]    = {  26, 138,  70, 158 },
+  [HB_THEME]    = {   2, 138,  22, 158 },
   [HB_SETTINGS] = {  98, 138, 142, 158 },
-  [HB_TIME]     = { 170, 138, 214, 158 },
+  [HB_TIME]     = { 218, 138, 238, 158 },
 };
 
 // Where each button leads to with up, down, left, right (-1: nowhere).
@@ -2193,9 +2193,10 @@ static void home_icon_bitmap(volatile uint8_t *frame, int cx, int cy, unsigned n
   }
 }
 
-// Theme: the brightness sun of TWiLight Menu++, dimmed in the dark theme.
+// Theme: the brightness sun of TWiLight Menu++ (1:1), dimmed in the dark theme.
+// Theme and time sit in the corners, on the cut off part of the grid.
 static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
-  home_icon_bitmap(frame, cx, cy, menu_theme == THEME_DARK ? HOME_ICON_DIM : HOME_ICON_SUN, 2);
+  home_icon_bitmap(frame, cx, cy, menu_theme == THEME_DARK ? HOME_ICON_DIM : HOME_ICON_SUN, 1);
 }
 // Settings: the DS icon of its settings button.
 static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
@@ -2203,7 +2204,7 @@ static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
 }
 // Time: the alarm clock.
 static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
-  home_icon_bitmap(frame, cx, cy, HOME_ICON_CLOCK, 2);
+  home_icon_bitmap(frame, cx, cy, HOME_ICON_CLOCK, 1);
 }
 
 // ---------------------------------------------------------------------------
