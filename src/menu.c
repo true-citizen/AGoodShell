@@ -91,6 +91,17 @@ enum {
 #define FT_COLOR         18
 #define HI_COLOR         19
 #define ACC_COLOR        20      // Accent color (home screen selection)
+#define BAR_C0           21      // Info bar gradient (top to bottom), then the bottom line
+#define BAR_C1           22
+#define BAR_C2           23
+#define BAR_C3           24
+#define BAR_LN           25
+#define BAR_TX           26      // Info bar text (white or black, depending on the accent)
+#define BAR_GREEN        27
+#define BAR_ORANGE       28
+#define SL_BG            29      // Background and grid colors for the scanline rows
+#define SL_GRID          30
+#define BAR_WHITE        31
 #define IGM_PAL_FG      240
 #define IGM_PAL_BG      241
 #define IGM_PAL_HI      242
@@ -107,9 +118,33 @@ enum {
   UiSetRect  = 2,
   UiSetASpd  = 3,
   UiSetHid   = 4,
-  UiSetSave  = 5,
-  UiSetMAX   = 5,
+  UiSetAccent = 5,
+  UiSetName  = 6,
+  UiSetSave  = 7,
+  UiSetMAX   = 7,
 };
+
+// Accent colors, the 16 favorite colors of the DS.
+#define ACCENT_COUNT 16
+static const struct { const char *name; uint32_t rgb; } accents[ACCENT_COUNT] = {
+  { "Gray",       0x8a8f9a }, { "Brown",    0xa0643c }, { "Red",     0xe03a3a }, { "Pink",    0xf080b0 },
+  { "Orange",     0xf08a20 }, { "Yellow",   0xe8c820 }, { "Lime",    0x9ad020 }, { "Green",   0x30b040 },
+  { "Dark green", 0x208040 }, { "Teal",     0x20b090 }, { "Cyan",    0x30b8e8 }, { "Blue",    0x3f7fd8 },
+  { "Dark blue",  0x2840a8 }, { "Violet",   0x7048d0 }, { "Purple",  0xa040c0 }, { "Magenta", 0xd83090 },
+};
+
+// Characters available when editing the user name.
+static const char name_chars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.";
+
+// Blends two GBA 15 bit colors, t/256 of the way from a to b.
+static uint16_t mix15(uint16_t a, uint16_t b, int t) {
+  uint16_t r = 0;
+  for (unsigned sh = 0; sh < 15; sh += 5) {
+    const int ca = (a >> sh) & 31, cb = (b >> sh) & 31;
+    r |= (uint16_t)((ca + (((cb - ca) * t) >> 8)) << sh);
+  }
+  return r;
+}
 
 enum {
   ToolsSDRAMTest = 0,
@@ -300,6 +335,7 @@ typedef void (*t_mkeyupd_fn)(unsigned newkeys);
 // Info and state for the menu tab
 static struct {
   uint8_t menu_tab;
+  uint8_t prev_tab;               // Tab to go back to when leaving the clock
 
   unsigned anim_state;            // Animation (text rotation) status.
 
@@ -331,6 +367,9 @@ static struct {
   // UI settings
   struct {
     int selector;                 // Pointed option
+    uint8_t editing;              // Editing the user name
+    uint8_t cursor;               // Character being edited
+    char oldname[USERNAME_MAX + 1];
   } uiset;
 
   // Main settings
@@ -352,7 +391,7 @@ static struct {
   // Home screen
   struct {
     int sel;                      // Selected button (HB_*)
-    int row2;                     // Middle row button to return to (HB_STUB1/2)
+    int row2;                     // Middle row button to return to (HB_RECENT/HB_HWTEST)
   } home;
 } smenu;
 
@@ -1678,6 +1717,28 @@ static unsigned clock_wday(uint32_t ts) {
   return (6 + ts / 86400) % 7;
 }
 
+// ---------------------------------------------------------------------------
+// Background shared by the home and clock tabs: a square grid on rows that
+// alternate between two close colors, to get faint scanlines like the DS menu.
+// The rows are prebuilt (palette index based, so they never change).
+// ---------------------------------------------------------------------------
+static uint16_t bg_rows[4][SCREEN_WIDTH / 2];    // Bit 0: odd row, bit 1: grid line
+
+static void bg_init(void) {
+  for (unsigned t = 0; t < 4; t++) {
+    uint8_t *row = (uint8_t*)bg_rows[t];
+    const uint8_t bg = (t & 1) ? SL_BG : BG_COLOR;
+    const uint8_t ln = (t & 1) ? SL_GRID : HI_COLOR;
+    for (unsigned x = 0; x < SCREEN_WIDTH; x++)
+      row[x] = ((t & 2) || (x & 31) == 0) ? ln : bg;
+  }
+}
+
+static void ds_background(volatile uint8_t *frame) {
+  for (int y = 16; y < SCREEN_HEIGHT; y++)
+    dma_memcpy16(&frame[y * SCREEN_WIDTH], bg_rows[(((y - 16) & 31) ? 0 : 2) | (y & 1)], SCREEN_WIDTH / 2);
+}
+
 // One seven segment digit, with the unlit segments faintly visible like on a
 // LCD. Segment bits: 0=top 1=top right 2=bottom right 3=bottom 4=bottom left
 // 5=top left 6=middle.
@@ -1699,6 +1760,7 @@ static void clock_digit(volatile uint8_t *frame, int x, int y, unsigned digit) {
 }
 
 void render_clock(volatile uint8_t *frame) {
+  ds_background(frame);
   dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
   draw_text_ovf("A: Set time", frame, 8, 144, SCREEN_WIDTH - 16);
 
@@ -1756,34 +1818,40 @@ void reload_theme(unsigned thnum);
 
 enum {
   HB_FLASH = 0,      // Games stored in the cart flash (fast loading ROMs)
-  HB_STUB1,          // Placeholder
-  HB_STUB2,          // Placeholder
+  HB_RECENT,         // Recent games tab
+  HB_HWTEST,         // Hardware test (tools) tab
   HB_CAROUSEL,       // Opens the carousel
   HB_THEME,          // Switches the light/dark theme
+  HB_UISET,          // Opens the UI settings tab
   HB_SETTINGS,       // Opens the settings tab
+  HB_ABOUT,          // Opens the about tab
   HB_TIME,           // Sets the clock
   HB_COUNT,
 };
 
 static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
   [HB_FLASH]    = {   8,  22, 232,  58 },
-  [HB_STUB1]    = {   8,  62, 118,  98 },
-  [HB_STUB2]    = { 122,  62, 232,  98 },
+  [HB_RECENT]   = {   8,  62, 118,  98 },
+  [HB_HWTEST]   = { 122,  62, 232,  98 },
   [HB_CAROUSEL] = {   8, 102, 232, 132 },
-  [HB_THEME]    = {   8, 136,  56, 158 },
-  [HB_SETTINGS] = {  96, 136, 144, 158 },
-  [HB_TIME]     = { 184, 136, 232, 158 },
+  [HB_THEME]    = {   8, 136,  48, 158 },
+  [HB_UISET]    = {  54, 136,  94, 158 },
+  [HB_SETTINGS] = { 100, 136, 140, 158 },
+  [HB_ABOUT]    = { 146, 136, 186, 158 },
+  [HB_TIME]     = { 192, 136, 232, 158 },
 };
 
 // Where each button leads to with up, down, left, right (-1: nowhere).
 static const int8_t home_nav[HB_COUNT][4] = {
-  [HB_FLASH]    = { -1,          HB_STUB1,    -1,          -1 },
-  [HB_STUB1]    = { HB_FLASH,    HB_CAROUSEL, -1,          HB_STUB2 },
-  [HB_STUB2]    = { HB_FLASH,    HB_CAROUSEL, HB_STUB1,    -1 },
-  [HB_CAROUSEL] = { HB_STUB1,    HB_SETTINGS, -1,          -1 },
-  [HB_THEME]    = { HB_CAROUSEL, -1,          -1,          HB_SETTINGS },
-  [HB_SETTINGS] = { HB_CAROUSEL, -1,          HB_THEME,    HB_TIME },
-  [HB_TIME]     = { HB_CAROUSEL, -1,          HB_SETTINGS, -1 },
+  [HB_FLASH]    = { -1,          HB_RECENT,   -1,          -1 },
+  [HB_RECENT]   = { HB_FLASH,    HB_CAROUSEL, -1,          HB_HWTEST },
+  [HB_HWTEST]   = { HB_FLASH,    HB_CAROUSEL, HB_RECENT,   -1 },
+  [HB_CAROUSEL] = { HB_RECENT,   HB_SETTINGS, -1,          -1 },
+  [HB_THEME]    = { HB_CAROUSEL, -1,          -1,          HB_UISET },
+  [HB_UISET]    = { HB_CAROUSEL, -1,          HB_THEME,    HB_SETTINGS },
+  [HB_SETTINGS] = { HB_CAROUSEL, -1,          HB_UISET,    HB_ABOUT },
+  [HB_ABOUT]    = { HB_CAROUSEL, -1,          HB_SETTINGS, HB_TIME },
+  [HB_TIME]     = { HB_CAROUSEL, -1,          HB_ABOUT,    -1 },
 };
 
 // Filled circle.
@@ -1868,12 +1936,94 @@ static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
   car_rect(frame, cx, cy + 1, cx + 4, cy + 2, FT_COLOR);
 }
 
+static void home_icon_uiset(volatile uint8_t *frame, int cx, int cy) {
+  home_disc(frame, cx, cy, 9, FT_COLOR);                            // Paint palette
+  home_disc(frame, cx - 4, cy - 3, 2, BG_COLOR);
+  home_disc(frame, cx + 1, cy - 5, 2, BG_COLOR);
+  home_disc(frame, cx + 5, cy - 1, 2, BG_COLOR);
+  home_disc(frame, cx + 2, cy + 5, 3, BG_COLOR);
+}
+
+static void home_icon_about(volatile uint8_t *frame, int cx, int cy) {
+  home_disc(frame, cx, cy, 9, FT_COLOR);                            // An "i" in a disc
+  car_rect(frame, cx - 1, cy - 6, cx + 2, cy - 3, BG_COLOR);
+  car_rect(frame, cx - 1, cy - 1, cx + 2, cy + 6, BG_COLOR);
+}
+
+// ---------------------------------------------------------------------------
+// Top information bar, like the DS one: user name, time, date and a few
+// filler icons, over a gradient of the accent color with dashed separators.
+// ---------------------------------------------------------------------------
+#define BAR_H        16
+#define BAR_SEP1     82
+#define BAR_SEP2     132
+#define BAR_SEP3     182
+
+static void bar_text(volatile uint8_t *frame, const char *t, int x) {
+  draw_text_idx8_bus16(t, (uint8_t*)&frame[x], SCREEN_WIDTH, BAR_TX);
+}
+
+static void bar_text_center(volatile uint8_t *frame, const char *t, int cx) {
+  bar_text(frame, t, cx - (int)font_width(t) / 2);
+}
+
+static void bar_icon_layout(volatile uint8_t *frame, int x) {
+  car_rect(frame, x, 2, x + 15, 14, 0);
+  car_rect(frame, x + 1, 3, x + 14, 7, BAR_ORANGE);
+  car_rect(frame, x + 1, 9, x + 14, 13, BAR_ORANGE);
+}
+
+static void bar_icon_m(volatile uint8_t *frame, int x) {
+  car_rect(frame, x, 2, x + 13, 14, 0);
+  car_rect(frame, x + 2, 4, x + 4, 12, BAR_WHITE);                  // The letter M
+  car_rect(frame, x + 9, 4, x + 11, 12, BAR_WHITE);
+  car_rect(frame, x + 4, 4, x + 6, 7, BAR_WHITE);
+  car_rect(frame, x + 7, 4, x + 9, 7, BAR_WHITE);
+  car_rect(frame, x + 5, 7, x + 8, 9, BAR_WHITE);
+}
+
+static void bar_icon_battery(volatile uint8_t *frame, int x) {
+  car_rect(frame, x, 3, x + 20, 13, 0);
+  car_rect(frame, x + 20, 6, x + 22, 10, 0);
+  car_rect(frame, x + 2, 5, x + 18, 11, BAR_GREEN);
+}
+
+static void render_infobar(volatile uint8_t *frame) {
+  static const uint8_t bands[4] = { BAR_C0, BAR_C1, BAR_C2, BAR_C3 };
+  for (unsigned i = 0; i < 4; i++)
+    dma_memset16(&frame[i * 4 * SCREEN_WIDTH], dup8(bands[i]), SCREEN_WIDTH * (i == 3 ? 3 : 4) / 2);
+  dma_memset16(&frame[(BAR_H - 1) * SCREEN_WIDTH], dup8(BAR_LN), SCREEN_WIDTH / 2);
+
+  // Separators: dashed vertical lines.
+  static const uint8_t seps[3] = { BAR_SEP1, BAR_SEP2, BAR_SEP3 };
+  for (unsigned i = 0; i < 3; i++)
+    for (int y = 1; y < BAR_H - 2; y += 2)
+      car_span(frame, y, seps[i], seps[i] + 1, BAR_LN);
+
+  // User name, clipped to its area.
+  char tmp[USERNAME_MAX + 4];
+  unsigned n = font_width_cap(user_name, BAR_SEP1 - 8);
+  memcpy(tmp, user_name, n);
+  tmp[n] = 0;
+  bar_text(frame, tmp, 5);
+
+  // Time and date (24h, month/day).
+  t_dec_date d;
+  timestamp2date(clock_now(), &d);
+  char buf[16];
+  npf_snprintf(buf, sizeof(buf), "%02d:%02d", d.hour, d.min);
+  bar_text_center(frame, buf, (BAR_SEP1 + BAR_SEP2) / 2 + 1);
+  npf_snprintf(buf, sizeof(buf), "%02d/%02d", d.month, d.day);
+  bar_text_center(frame, buf, (BAR_SEP2 + BAR_SEP3) / 2 + 1);
+
+  // Filler icons, as in the DS.
+  bar_icon_layout(frame, 185);
+  bar_icon_m(frame, 202);
+  bar_icon_battery(frame, 217);
+}
+
 void render_home(volatile uint8_t *frame) {
-  // Grid background.
-  for (int y = 48; y < SCREEN_HEIGHT; y += 32)
-    car_span(frame, y, 0, SCREEN_WIDTH, HI_COLOR);
-  for (int x = 0; x < SCREEN_WIDTH; x += 32)
-    car_rect(frame, x, 16, x + 1, SCREEN_HEIGHT, HI_COLOR);
+  ds_background(frame);
 
   for (int b = HB_FLASH; b <= HB_CAROUSEL; b++)
     home_button(frame, b);
@@ -1891,22 +2041,26 @@ void render_home(volatile uint8_t *frame) {
   #endif
   draw_central_text(buf, frame, tcx, home_rects[HB_FLASH].y0 + 18);
 
-  // Placeholders: a stub icon (black rectangle) and a name.
-  for (int b = HB_STUB1; b <= HB_STUB2; b++) {
+  // Recent games and hardware test. Placeholder icons for now (black rectangles).
+  static const char *const names[2][2] = { { "Recent", "games" }, { "Hardware", "test" } };
+  for (int b = HB_RECENT; b <= HB_HWTEST; b++) {
     const int x0 = home_rects[b].x0, y0 = home_rects[b].y0;
     car_rect(frame, x0 + 8, y0 + 8, x0 + 36, y0 + 28, 0);
-    npf_snprintf(buf, sizeof(buf), "Stub %d", b - HB_STUB1 + 1);
-    draw_central_text(buf, frame, (x0 + 40 + home_rects[b].x1) / 2, y0 + 10);
+    const int cx = (x0 + 40 + home_rects[b].x1) / 2;
+    draw_central_text(names[b - HB_RECENT][0], frame, cx, y0 + 2);
+    draw_central_text(names[b - HB_RECENT][1], frame, cx, y0 + 18);
   }
 
   // Carousel.
   home_icon_cart(frame, home_rects[HB_CAROUSEL].x0 + 8, home_rects[HB_CAROUSEL].y0 + 4);
   draw_central_text("Game carousel", frame, tcx, home_rects[HB_CAROUSEL].y0 + 7);
 
-  // Bottom row: theme, settings and time.
-  home_icon_theme(frame, (home_rects[HB_THEME].x0 + home_rects[HB_THEME].x1) / 2, 147);
-  home_icon_settings(frame, (home_rects[HB_SETTINGS].x0 + home_rects[HB_SETTINGS].x1) / 2, 147);
-  home_icon_time(frame, (home_rects[HB_TIME].x0 + home_rects[HB_TIME].x1) / 2, 147);
+  // Bottom row: theme, UI settings, settings, about and time.
+  static void (*const icons[HB_COUNT - HB_THEME])(volatile uint8_t*, int, int) = {
+    home_icon_theme, home_icon_uiset, home_icon_settings, home_icon_about, home_icon_time,
+  };
+  for (int b = HB_THEME; b <= HB_TIME; b++)
+    icons[b - HB_THEME](frame, (home_rects[b].x0 + home_rects[b].x1) / 2, 147);
 
   home_brackets(frame, smenu.home.sel);
 }
@@ -2405,32 +2559,50 @@ void render_settings(volatile uint8_t *frame) {
 }
 
 void render_ui_settings(volatile uint8_t *frame) {
-  const unsigned colx = 170;
+  const unsigned colx = 170, y0 = 18, step = 16;
   char tmpbuf[64];
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %u >", menu_theme + 1U);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_THEME], frame, 8, 22, 224);
-  draw_central_text(tmpbuf, frame, colx, 22 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_THEME], frame, 8, y0, 224);
+  draw_central_text(tmpbuf, frame, colx, y0);
 
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_LANG_NAME]);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_LANG], frame, 8, 22 + 20, 224);
-  draw_central_text(tmpbuf, frame, colx, 22 + 20 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_LANG], frame, 8, y0 + step, 224);
+  draw_central_text(tmpbuf, frame, colx, y0 + step);
 
-  draw_text_ovf(msgs[lang_id][MSG_UIS_RECNT], frame, 8, 22 + 40, 224);
-  draw_central_text(msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, 22 + 40 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_RECNT], frame, 8, y0 + step * 2, 224);
+  draw_central_text(msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, y0 + step * 2);
 
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_UIS_SPD0 + anim_speed]);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_ANSPD], frame, 8, 22 + 60, 224);
-  draw_central_text(tmpbuf, frame, colx, 22 + 60 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_ANSPD], frame, 8, y0 + step * 3, 224);
+  draw_central_text(tmpbuf, frame, colx, y0 + step * 3);
 
-  draw_text_ovf(msgs[lang_id][MSG_UIS_BHID], frame, 8, 22 + 80, 224);
-  draw_central_text(msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, 22 + 80 );
+  draw_text_ovf(msgs[lang_id][MSG_UIS_BHID], frame, 8, y0 + step * 4, 224);
+  draw_central_text(msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, y0 + step * 4);
+
+  npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", accents[accent_color % ACCENT_COUNT].name);
+  draw_text_ovf("Accent color", frame, 8, y0 + step * 5, 224);
+  draw_central_text(tmpbuf, frame, colx, y0 + step * 5);
+
+  draw_text_ovf("User name", frame, 8, y0 + step * 6, 224);
+  if (smenu.uiset.editing) {
+    // Show the whole (padded) name with an underline on the edited character.
+    const int sx = (int)colx - (int)font_width(user_name) / 2;
+    draw_text_idx8_bus16(user_name, (uint8_t*)&frame[(y0 + step * 6) * SCREEN_WIDTH + sx], SCREEN_WIDTH, FT_COLOR);
+    char pre[USERNAME_MAX + 1], one[2] = { user_name[smenu.uiset.cursor], 0 };
+    memcpy(pre, user_name, smenu.uiset.cursor);
+    pre[smenu.uiset.cursor] = 0;
+    const int cx = sx + (int)font_width(pre);
+    car_rect(frame, cx, y0 + step * 6 + 14, cx + (int)font_width(one), y0 + step * 6 + 16, ACC_COLOR);
+  } else {
+    draw_central_text(user_name[0] ? user_name : "-", frame, colx, y0 + step * 6);
+  }
 
   if (smenu.uiset.selector != UiSetSave)
     for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, 22 + smenu.uiset.selector * 20, 63);
+      render_icon_trans(i, y0 + smenu.uiset.selector * step, 63);
 
-  draw_button_box(frame, 20, 220, 132, 152, smenu.uiset.selector == UiSetSave);
-  draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 134);
+  draw_button_box(frame, 20, 220, 136, 156, smenu.uiset.selector == UiSetSave);
+  draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 138);
 }
 
 void render_info(volatile uint8_t *frame) {
@@ -2508,7 +2680,24 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[BG_COLOR] = themes[thnum].bg_color;
   MEM_PALETTE[FT_COLOR] = themes[thnum].ft_color;
   MEM_PALETTE[HI_COLOR] = themes[thnum].hi_color;
-  MEM_PALETTE[ACC_COLOR] = RGB2GBA(0x3f7fd8);
+
+  // Accent color: selection brackets and the info bar gradient.
+  const uint32_t rgb = accents[accent_color % ACCENT_COUNT].rgb;
+  const uint16_t acc = RGB2GBA(rgb);
+  const bool light = (((rgb >> 16) & 0xFF) * 3 + ((rgb >> 8) & 0xFF) * 6 + (rgb & 0xFF)) / 10 > 150;
+  MEM_PALETTE[ACC_COLOR] = acc;
+  MEM_PALETTE[BAR_C0] = mix15(acc, 0x7FFF, 100);
+  MEM_PALETTE[BAR_C1] = mix15(acc, 0x7FFF, 45);
+  MEM_PALETTE[BAR_C2] = acc;
+  MEM_PALETTE[BAR_C3] = mix15(acc, 0, 40);
+  MEM_PALETTE[BAR_LN] = mix15(acc, 0, 130);
+  MEM_PALETTE[BAR_TX] = light ? RGB2GBA(0x101018) : 0x7FFF;
+  MEM_PALETTE[BAR_GREEN] = RGB2GBA(0x30d040);
+  MEM_PALETTE[BAR_ORANGE] = RGB2GBA(0xf08020);
+  MEM_PALETTE[BAR_WHITE] = 0x7FFF;
+  // Scanline rows are a bit closer to the text color than the others.
+  MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
+  MEM_PALETTE[SL_GRID] = mix15(themes[thnum].hi_color, themes[thnum].ft_color, 14);
   // In-game menu palette
   MEM_PALETTE[IGM_PAL_FG] = themes[thnum].fg_color;
   MEM_PALETTE[IGM_PAL_BG] = themes[thnum].bg_color;
@@ -2536,25 +2725,9 @@ static const struct {
 
 // Renders the menu. Arg0 represents the frame count difference with the
 // previous rendered frame (for animations and similar stuff).
-// Icon shown in the tab bar for each tab.
-static const uint8_t tab_icons[MENUTAB_MAX] = {
-  [MENUTAB_HOME]       = ICON_HOME,
-  [MENUTAB_RECENT]     = ICON_RECENT,
-  [MENUTAB_ROMBROWSE]  = ICON_DISK,
-  #ifdef SUPPORT_NORGAMES
-  [MENUTAB_NORBROWSE]  = ICON_FLASH,
-  #endif
-  [MENUTAB_DSSCREEN]   = ICON_DSSCREEN,
-  [MENUTAB_CLOCK]      = ICON_CLOCK,
-  [MENUTAB_SETTINGS]   = ICON_SETTINGS,
-  [MENUTAB_UILANG]     = ICON_UILANG_SETTINGS,
-  [MENUTAB_TOOLS]      = ICON_TOOLS,
-  [MENUTAB_INFO]       = ICON_INFO,
-};
-
-// The recent ROMs tab is only shown when enabled and not empty.
-static bool tab_visible(unsigned tab) {
-  return tab != MENUTAB_RECENT || (recent_menu && smenu.recent.maxentries);
+// The recent ROMs tab is only available when enabled and not empty.
+static bool recent_available(void) {
+  return recent_menu && smenu.recent.maxentries;
 }
 
 void menu_render(unsigned fcnt) {
@@ -2562,19 +2735,8 @@ void menu_render(unsigned fcnt) {
   render_fcnt = fcnt;
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
 
-  // Render the tab menu on top (rows 0..15), highlighting the selected option
-  dma_memset16(&frame[0], dup8(FG_COLOR), SCREEN_WIDTH*16/2);
-
-  // Render icon bar
-  for (unsigned i = 0, slot = 0; i < MENUTAB_MAX; i++) {
-    if (!tab_visible(i))
-      continue;
-    if (i == smenu.menu_tab)
-      render_icon(slot*16, 0, tab_icons[i]);
-    else
-      render_icon_trans(slot*16, 0, tab_icons[i]);
-    slot++;
-  }
+  // Render the information bar on top (rows 0..15)
+  render_infobar(frame);
 
   // Render the main area
   dma_memset16(&frame[16*SCREEN_WIDTH], dup8(BG_COLOR), SCREEN_WIDTH*(SCREEN_HEIGHT-16) / 2);
@@ -2648,11 +2810,12 @@ void menu_init(int sram_testres) {
   // Load recent ROMs (we could disable this for speed)
   recent_reload();
 
+  bg_init();
   reload_theme(menu_theme);
 
   smenu.menu_tab = MENUTAB_HOME;
   smenu.home.sel = HB_CAROUSEL;
-  smenu.home.row2 = HB_STUB1;
+  smenu.home.row2 = HB_RECENT;
 
   // Load icons into VRAM
   dma_memcpy16(MEM_VRAM_OBJS, icons_img, sizeof(icons_img) / 2);
@@ -3446,6 +3609,8 @@ static void keypress_menu_browse(unsigned newkeys) {
               sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
       browser_reload();
       car_pos = smenu.browser.selector << 8;
+    } else {
+      smenu.menu_tab = MENUTAB_HOME;
     }
   }
 }
@@ -3466,9 +3631,14 @@ static void home_activate(int b) {
     spop.alert_msg = "No flash games on this cart";
     #endif
     break;
-  case HB_STUB1:
-  case HB_STUB2:
-    spop.alert_msg = "Not implemented yet";
+  case HB_RECENT:
+    if (recent_available())
+      smenu.menu_tab = MENUTAB_RECENT;
+    else
+      spop.alert_msg = "No recent games";
+    break;
+  case HB_HWTEST:
+    smenu.menu_tab = MENUTAB_TOOLS;
     break;
   case HB_CAROUSEL:
     smenu.menu_tab = MENUTAB_ROMBROWSE;
@@ -3478,8 +3648,14 @@ static void home_activate(int b) {
     reload_theme(menu_theme);
     save_ui_settings();
     break;
+  case HB_UISET:
+    smenu.menu_tab = MENUTAB_UILANG;
+    break;
   case HB_SETTINGS:
     smenu.menu_tab = MENUTAB_SETTINGS;
+    break;
+  case HB_ABOUT:
+    smenu.menu_tab = MENUTAB_INFO;
     break;
   case HB_TIME:
     clock_open_setter();
@@ -3495,10 +3671,10 @@ static void keypress_menu_home(unsigned newkeys) {
       continue;
     int dst = home_nav[src][d];
     // Moving vertically through the middle row returns to the last used button.
-    if (dst == HB_STUB1 && (src == HB_FLASH || src == HB_CAROUSEL))
+    if (dst == HB_RECENT && (src == HB_FLASH || src == HB_CAROUSEL))
       dst = smenu.home.row2;
     smenu.home.sel = dst;
-    if (dst == HB_STUB1 || dst == HB_STUB2)
+    if (dst == HB_RECENT || dst == HB_HWTEST)
       smenu.home.row2 = dst;
     break;
   }
@@ -3640,7 +3816,41 @@ static void keypress_menu_settings(unsigned newkeys) {
   }
 }
 
+// User name editor: UP/DOWN change the character, LEFT/RIGHT move the cursor,
+// A accepts and B cancels.
+static void keypress_username_edit(unsigned newkeys) {
+  char *c = &user_name[smenu.uiset.cursor];
+  const int n = sizeof(name_chars) - 1;
+  const char *p = strchr(name_chars, *c);
+  int idx = (p && *c) ? (int)(p - name_chars) : 0;
+  if (newkeys & KEY_BUTTUP)
+    idx = (idx + 1) % n;
+  if (newkeys & KEY_BUTTDOWN)
+    idx = (idx + n - 1) % n;
+  *c = name_chars[idx];
+  if ((newkeys & KEY_BUTTLEFT) && smenu.uiset.cursor)
+    smenu.uiset.cursor--;
+  if ((newkeys & KEY_BUTTRIGHT) && smenu.uiset.cursor < USERNAME_MAX - 1)
+    smenu.uiset.cursor++;
+
+  if (newkeys & (KEY_BUTTA | KEY_BUTTB)) {
+    if (newkeys & KEY_BUTTB)
+      strcpy(user_name, smenu.uiset.oldname);
+    else {
+      unsigned len = USERNAME_MAX;
+      while (len && user_name[len - 1] == ' ')
+        len--;
+      user_name[len] = 0;
+    }
+    smenu.uiset.editing = 0;
+  }
+}
+
 static void keypress_menu_uisettings(unsigned newkeys) {
+  if (smenu.uiset.editing) {
+    keypress_username_edit(newkeys);
+    return;
+  }
   if (newkeys & KEY_BUTTUP)
     smenu.uiset.selector = MAX(0, smenu.uiset.selector - 1);
   if (newkeys & KEY_BUTTDOWN)
@@ -3656,6 +3866,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
       lang_id = (lang_id + LANG_COUNT - 1) % LANG_COUNT;
+    else if (smenu.uiset.selector == UiSetAccent)
+      accent_color = (accent_color + ACCENT_COUNT - 1) % ACCENT_COUNT;
   }
   if (newkeys & KEY_BUTTRIGHT) {
     if (smenu.uiset.selector == UiSetTheme)
@@ -3668,6 +3880,18 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
       lang_id = (lang_id + 1) % LANG_COUNT;
+    else if (smenu.uiset.selector == UiSetAccent)
+      accent_color = (accent_color + 1) % ACCENT_COUNT;
+  }
+
+  if (newkeys & KEY_BUTTA && smenu.uiset.selector == UiSetName) {
+    // Start editing: pad the name with spaces to its full length.
+    strcpy(smenu.uiset.oldname, user_name);
+    for (unsigned i = strlen(user_name); i < USERNAME_MAX; i++)
+      user_name[i] = ' ';
+    user_name[USERNAME_MAX] = 0;
+    smenu.uiset.cursor = 0;
+    smenu.uiset.editing = 1;
   }
 
   if (newkeys & KEY_BUTTA && smenu.uiset.selector == UiSetSave) {
@@ -3840,18 +4064,23 @@ void menu_keypress(unsigned newkeys) {
       keyfns[spop.pop_num](newkeys);
     }
   } else {
-    // Menu change via trigger buttons
-    int ntab = smenu.menu_tab;
-    if (newkeys & KEY_BUTTL) {
-      do ntab--; while (ntab >= 0 && !tab_visible(ntab));
-      if (ntab >= 0)
-        smenu.menu_tab = ntab;
+    const unsigned tab0 = smenu.menu_tab;
+    const bool editing = tab0 == MENUTAB_UILANG && smenu.uiset.editing;
+
+    // Shoulder buttons toggle the clock tab, going back to the previous tab.
+    if (!editing && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
+      if (tab0 == MENUTAB_CLOCK)
+        smenu.menu_tab = smenu.prev_tab;
+      else {
+        smenu.prev_tab = tab0;
+        smenu.menu_tab = MENUTAB_CLOCK;
+      }
     }
-    else if (newkeys & KEY_BUTTR) {
-      do ntab++; while (ntab < MENUTAB_MAX && !tab_visible(ntab));
-      if (ntab < MENUTAB_MAX)
-        smenu.menu_tab = ntab;
-    }
+    // START switches between the carousel and the DS screen views.
+    else if ((newkeys & KEY_BUTTSTA) && tab0 == MENUTAB_ROMBROWSE)
+      smenu.menu_tab = MENUTAB_DSSCREEN;
+    else if ((newkeys & KEY_BUTTSTA) && tab0 == MENUTAB_DSSCREEN)
+      smenu.menu_tab = MENUTAB_ROMBROWSE;
 
     if (newkeys & (KEY_BUTTL | KEY_BUTTR | KEY_BUTTUP | KEY_BUTTDOWN))
       smenu.anim_state = 0;
@@ -3871,6 +4100,12 @@ void menu_keypress(unsigned newkeys) {
       keypress_menu_info,
     };
     keyfns[smenu.menu_tab](newkeys);
+
+    // B goes back to the home tab, unless the tab uses it (browsers) or the
+    // tab was just changed.
+    if ((newkeys & KEY_BUTTB) && !editing && smenu.menu_tab == tab0 &&
+        tab0 != MENUTAB_HOME && tab0 != MENUTAB_ROMBROWSE && tab0 != MENUTAB_DSSCREEN)
+      smenu.menu_tab = MENUTAB_HOME;
   }
 }
 

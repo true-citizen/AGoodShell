@@ -102,6 +102,9 @@ uint8_t rtcspeed_default = 3;
 
 uint32_t rtcvalue_default = 45568800U;
 
+uint8_t accent_color = 11;
+char user_name[USERNAME_MAX + 1] = "User";
+
 // Last time the user set in the clock tab (the cart has no RTC): 2026-01-01.
 uint32_t clock_ts_default = 820540800U;
 
@@ -126,9 +129,11 @@ bool save_ui_settings() {
     "recent_menu=%u\n"
     "anim_speed=%u\n"
     "hide_hidden=%u\n"
-    "clock_ts=%lu\n",
+    "clock_ts=%lu\n"
+    "accent=%u\n"
+    "username=%s\n",
     menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden,
-    clock_ts_default);
+    clock_ts_default, accent_color, user_name);
 
   UINT wrbytes;
   FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
@@ -235,6 +240,11 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
     lang_id = lang_lookup(code);
   } else if (!strcmp(var, "clock_ts")) {
     clock_ts_default = parseuint(value);
+  } else if (!strcmp(var, "username")) {
+    unsigned n = 0;
+    for (; n < USERNAME_MAX && (uint8_t)value[n] >= 0x20 && (uint8_t)value[n] < 0x7F; n++)
+      user_name[n] = value[n];
+    user_name[n] = 0;
   } else {
     static const struct {
       const char *s;
@@ -244,6 +254,7 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
       { "recent_menu", &recent_menu },
       { "hide_hidden", &hide_hidden },
       { "anim_speed",  &anim_speed },
+      { "accent",      &accent_color },
     };
     unsigned valu = parseuint(value);
     for (unsigned i = 0; i < sizeof(uintset)/sizeof(uintset[0]); i++)
