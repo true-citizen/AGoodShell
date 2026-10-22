@@ -8,8 +8,11 @@ flash carts (which are still widely used and very cheaply available). The goal
 is to bring DS-like interface to Gameboy Advance gaming console.
 
 This is fork of SuperFW and its website and documentation are at https://superfw.davidgf.net/
+
 Warning: I have limited testing opportunities(only SuperChis and DS Phat), so please report all issues
-you found that are not present on official SuperFW on Issues tab of this fork
+you found that are not present on official SuperFW on Issues tab of this fork. Its preferable that
+besides of GBA you also have Nintendo DS/DS Lite so in case if your flashcart gets bricked, 
+you could reflash original SuperFW back using Nintendo DS
 
 Installation
 ------------
