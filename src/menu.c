@@ -102,6 +102,18 @@ enum {
 #define SL_BG            29      // Background and grid colors for the scanline rows
 #define SL_GRID          30
 #define BAR_WHITE        31
+#define CAL_TXT          32      // Calendar and analog clock (DS Phat style) colors
+#define CAL_RED          33
+#define CAL_BLUE         34
+#define CAL_HRED         35
+#define CAL_HBLUE        36
+#define CAL_HGRAY        37
+#define CAL_PINK         38
+#define CAL_LBLUE        39
+#define CAL_LINE         40
+#define CLK_HAND         41
+#define CLK_PIN          42
+#define CLK_TICK         43
 #define IGM_PAL_FG      240
 #define IGM_PAL_BG      241
 #define IGM_PAL_HI      242
@@ -164,7 +176,7 @@ enum {
 #define CAR_BOX_W        56      // Box size
 #define CAR_BOX_H        56
 #define CAR_BOX_Y        26      // Top of the boxes (below the tab bar)
-#define CAR_ICON_SZ      32      // Stub icon size (a black rectangle for now)
+#define CAR_ICON_SZ      32      // File icon size
 #define CAR_ICON_Y       10      // Icon offset from the top of the box
 #define CAR_FRAME_PAD     4      // Selection frame padding around a box
 #define CAR_PAGE          4      // Entries skipped by UP/DOWN
@@ -178,13 +190,13 @@ enum {
 #define DSS_TITLE_Y     114      // Title window and arrow buttons
 #define DSS_TITLE_H      24
 // Clock tab:
-#define CLK_DIGIT_W      18      // Seven segment digit size and segment thickness
-#define CLK_DIGIT_H      36
-#define CLK_DIGIT_T       4
-#define CLK_DIGIT_Y      24
-#define CAL_COL_W        20      // Calendar column width
-#define CAL_X            98      // Calendar left edge (clock panel is on the left)
-#define CLK_CX           45      // Center of the clock panel
+#define CLK_FACE_X       16      // Analog clock face: 6x6 tiles of 16x16, centered
+#define CLK_FACE_Y       32
+#define CLK_FACE_SZ      96
+#define CLK_CX           (CLK_FACE_X + CLK_FACE_SZ / 2)   // Pin position
+#define CLK_CY           (CLK_FACE_Y + CLK_FACE_SZ / 2)
+#define CAL_X           128      // Calendar: 7 columns of 16x16 tiles up to the screen edge
+#define CAL_TILE         16
 
 enum {
   SettTitle1 = 0,
@@ -1558,6 +1570,54 @@ static void car_chrome(volatile uint8_t *frame) {
     draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 8);
 }
 
+// Icons of the file lists, drawn with plain shapes at any size: a folder, a
+// generic file and a game (any ROM the menu can launch).
+enum { ICON_KIND_FOLDER, ICON_KIND_FILE, ICON_KIND_GAME };
+
+static unsigned entry_icon_kind(const t_centry *e) {
+  if (e->isdir)
+    return ICON_KIND_FOLDER;
+  const char *ext = find_extension(e->fname);
+  if (ext) {
+    static const char *const gameext[] = { "gba", "gb", "gbc", "nes", "sms" };
+    for (unsigned i = 0; i < sizeof(gameext) / sizeof(gameext[0]); i++)
+      if (!strcasecmp(ext, gameext[i]))
+        return ICON_KIND_GAME;
+  }
+  return ICON_KIND_FILE;
+}
+
+// Draws an icon of size sz (even) centered horizontally at cx, top at y.
+static void car_icon(volatile uint8_t *frame, int cx, int y, int sz, unsigned kind) {
+  const int x = cx - sz / 2, u = sz / 8;
+  switch (kind) {
+  case ICON_KIND_FOLDER:
+    car_rect(frame, x, y + u, x + 3 * u, y + 3 * u, FT_COLOR);               // Tab
+    car_rect(frame, x, y + 2 * u, x + sz, y + sz - u, FT_COLOR);             // Body
+    car_rect(frame, x + 2, y + 2 * u + 2, x + sz - 2, y + sz - u - 2, ACC_COLOR);
+    car_rect(frame, x + 2, y + 2 * u + 2, x + sz - 2, y + 3 * u + 1, BG_COLOR);   // Open flap edge
+    break;
+  case ICON_KIND_FILE: {
+    const int x0 = x + u, x1 = x + sz - u, fold = 2 * u;
+    car_rect(frame, x0, y, x1 - fold, y + sz, FT_COLOR);                     // Page, with the top right corner folded
+    car_rect(frame, x1 - fold, y + fold, x1, y + sz, FT_COLOR);
+    car_rect(frame, x0 + 2, y + 2, x1 - fold, y + sz - 2, BG_COLOR);
+    car_rect(frame, x1 - fold, y + fold, x1 - 2, y + sz - 2, BG_COLOR);
+    car_rect(frame, x1 - fold, y, x1, y + fold, HI_COLOR);                   // Fold
+    car_rect(frame, x1 - fold, y + fold - 2, x1 - 2, y + fold, FT_COLOR);
+    car_rect(frame, x1 - fold, y + fold - 2, x1 - fold + 2, y + fold + 2, FT_COLOR);
+    for (int i = 0; i < 3; i++)                                              // Text lines
+      car_rect(frame, x0 + 2 + u, y + 3 * u + i * (2 * u - 1), x1 - 2 - u, y + 3 * u + i * (2 * u - 1) + 2, FT_COLOR);
+    break; }
+  default:
+    car_rect(frame, x + u, y + u, x + sz - u, y + 3 * u, FT_COLOR);          // Cartridge: notch, body and label
+    car_rect(frame, x, y + 2 * u, x + sz, y + sz - u, FT_COLOR);
+    car_rect(frame, x + u + 2, y + 3 * u, x + sz - u - 2, y + 6 * u - 1, BG_COLOR);
+    car_rect(frame, x + 2 * u, y + sz - 2 * u, x + sz - 2 * u, y + sz - u, ACC_COLOR);
+    break;
+  }
+}
+
 // Carousel: boxes in a row, a fixed selection frame in the middle.
 void render_carousel(volatile uint8_t *frame) {
   car_chrome(frame);
@@ -1575,9 +1635,7 @@ void render_carousel(volatile uint8_t *frame) {
     const int bx = car_xof(i, CAR_PITCH);          // Box center
     car_rect(frame, bx - CAR_BOX_W / 2, CAR_BOX_Y,
                     bx + CAR_BOX_W / 2, CAR_BOX_Y + CAR_BOX_H, HI_COLOR);
-    // Stub icon: black rectangle (palette entry 0 is black).
-    car_rect(frame, bx - CAR_ICON_SZ / 2, CAR_BOX_Y + CAR_ICON_Y,
-                    bx + CAR_ICON_SZ / 2, CAR_BOX_Y + CAR_ICON_Y + CAR_ICON_SZ, 0);
+    car_icon(frame, bx, CAR_BOX_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(sdr_state->fileorder[i]));
   }
 
   // Fixed selection frame in the middle.
@@ -1647,8 +1705,7 @@ void render_dsscreen(volatile uint8_t *frame) {
     const int y0 = DSS_SHELF_Y - size;
     car_rect(frame, x0, y0, x0 + size, DSS_SHELF_Y, lift >= DSS_LIFT - 2 ? FT_COLOR : FG_COLOR);
     car_rect(frame, x0 + 2, y0 + 2, x0 + size - 2, DSS_SHELF_Y, HI_COLOR);
-    // Stub icon: black rectangle.
-    car_rect(frame, bx - isz / 2, y0 + (size - isz) / 2 - 2, bx + isz / 2, y0 + (size - isz) / 2 - 2 + isz, 0);
+    car_icon(frame, bx, y0 + (size - isz) / 2 - 2, isz, entry_icon_kind(sdr_state->fileorder[i]));
   }
 
   // Title window with the arrow buttons.
@@ -1697,13 +1754,7 @@ static void clock_open_setter() {
   spop.rtcpop.callback = clock_set_callback;
 }
 
-static const char *const clk_wdays[7] = {
-  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
-};
 static const char *const clk_wdays_short[7] = { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
-static const char *const clk_months[12] = {
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-};
 
 // Number of days in a month (year is 0..99, years since 2000: all multiples
 // of four are leap years).
@@ -1722,45 +1773,120 @@ static unsigned clock_wday(uint32_t ts) {
 // alternate between two close colors, to get faint scanlines like the DS menu.
 // The rows are prebuilt (palette index based, so they never change).
 // ---------------------------------------------------------------------------
-static uint16_t bg_rows[4][SCREEN_WIDTH / 2];    // Bit 0: odd row, bit 1: grid line
+// Grid sizes (tile width, height) of each background; row 0 is the clock
+// tab (16x16 tiles) and row 1 the home tab (48x48 tiles).
+enum { BG_CLOCK = 0, BG_HOME = 1, BG_COUNT };
+static const uint8_t bg_tiles[BG_COUNT][2] = { { 16, 16 }, { 48, 48 } };
+static uint16_t bg_rows[BG_COUNT][4][SCREEN_WIDTH / 2];   // Bit 0: odd row, bit 1: grid line
 
 static void bg_init(void) {
-  for (unsigned t = 0; t < 4; t++) {
-    uint8_t *row = (uint8_t*)bg_rows[t];
-    const uint8_t bg = (t & 1) ? SL_BG : BG_COLOR;
-    const uint8_t ln = (t & 1) ? SL_GRID : HI_COLOR;
-    for (unsigned x = 0; x < SCREEN_WIDTH; x++)
-      row[x] = ((t & 2) || (x & 31) == 0) ? ln : bg;
+  for (unsigned g = 0; g < BG_COUNT; g++)
+    for (unsigned t = 0; t < 4; t++) {
+      uint8_t *row = (uint8_t*)bg_rows[g][t];
+      const uint8_t bg = (t & 1) ? SL_BG : BG_COLOR;
+      const uint8_t ln = (t & 1) ? SL_GRID : HI_COLOR;
+      for (unsigned x = 0; x < SCREEN_WIDTH; x++)
+        row[x] = ((t & 2) || (x % bg_tiles[g][0]) == 0) ? ln : bg;
+    }
+}
+
+// Draws the background below the info bar: square tiles on rows that
+// alternate between two close colors, to get faint scanlines like the DS.
+static void ds_background(volatile uint8_t *frame, unsigned grid) {
+  const unsigned th = bg_tiles[grid][1];
+  for (int y = 16; y < SCREEN_HEIGHT; y++)
+    dma_memcpy16(&frame[y * SCREEN_WIDTH], bg_rows[grid][(((y - 16) % th) ? 0 : 2) | (y & 1)], SCREEN_WIDTH / 2);
+}
+
+// Text of a given color, centered at x.
+static void text_center(volatile uint8_t *frame, const char *t, int cx, int y, uint8_t color) {
+  draw_text_idx8_bus16(t, (uint8_t*)&frame[y * SCREEN_WIDTH + cx - (int)font_width(t) / 2], SCREEN_WIDTH, color);
+}
+
+// Rectangle with rounded corners (3 pixel profile).
+static void car_rrect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, uint8_t color) {
+  static const uint8_t inset[3] = { 3, 1, 1 };
+  for (int y = y0; y < y1; y++) {
+    const int d = MIN(y - y0, y1 - 1 - y);
+    const int i = d < 3 ? inset[d] : 0;
+    car_span(frame, y, x0 + i, x1 - i, color);
   }
 }
 
-static void ds_background(volatile uint8_t *frame) {
-  for (int y = 16; y < SCREEN_HEIGHT; y++)
-    dma_memcpy16(&frame[y * SCREEN_WIDTH], bg_rows[(((y - 16) & 31) ? 0 : 2) | (y & 1)], SCREEN_WIDTH / 2);
+// Sine table, 256 * sin(deg) for 0..90 degrees.
+static const uint16_t sin_lut[91] = {
+  0, 4, 9, 13, 18, 22, 27, 31, 36, 40, 44, 49, 53, 58, 62, 66, 71, 75, 79, 83, 88, 92, 96, 100, 104,
+  108, 112, 116, 120, 124, 128, 132, 136, 139, 143, 147, 150, 154, 158, 161, 165, 168, 171, 175, 178,
+  181, 184, 187, 190, 193, 196, 199, 202, 204, 207, 210, 212, 215, 217, 219, 222, 224, 226, 228, 230,
+  232, 234, 236, 237, 239, 241, 242, 243, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 254, 255,
+  255, 255, 256, 256, 256, 256,
+};
+
+static int isin(int deg) {
+  deg %= 360;
+  if (deg < 0)
+    deg += 360;
+  if (deg <= 90)  return sin_lut[deg];
+  if (deg <= 180) return sin_lut[180 - deg];
+  if (deg <= 270) return -sin_lut[deg - 180];
+  return -sin_lut[360 - deg];
 }
 
-// One seven segment digit, with the unlit segments faintly visible like on a
-// LCD. Segment bits: 0=top 1=top right 2=bottom right 3=bottom 4=bottom left
-// 5=top left 6=middle.
-static void clock_digit(volatile uint8_t *frame, int x, int y, unsigned digit) {
-  static const uint8_t segs[10] = { 0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F };
-  const int w = CLK_DIGIT_W, t = CLK_DIGIT_T, mid = (CLK_DIGIT_H - t) / 2;
-  const struct { int8_t x0, y0, x1, y1; } rects[7] = {
-    { t, 0, w - t, t },                                   // top
-    { w - t, t, w, mid },                                 // top right
-    { w - t, mid + t, w, CLK_DIGIT_H - t },               // bottom right
-    { t, CLK_DIGIT_H - t, w - t, CLK_DIGIT_H },           // bottom
-    { 0, mid + t, t, CLK_DIGIT_H - t },                   // bottom left
-    { 0, t, t, mid },                                     // top left
-    { t, mid, w - t, mid + t },                           // middle
-  };
-  for (unsigned s = 0; s < 7; s++)
-    car_rect(frame, x + rects[s].x0, y + rects[s].y0, x + rects[s].x1, y + rects[s].y1,
-             (segs[digit % 10] >> s) & 1 ? FT_COLOR : HI_COLOR);
+// Hand tip offset for an angle (degrees clockwise from 12) and a length.
+static int clock_off(int v) {
+  return (v + (v < 0 ? -128 : 128)) / 256;
+}
+
+// Draws a clock hand, a 2 pixel thick line from the pin. This is the needle
+// code of TWiLight Menu++ (quickmenu theme) with integer trigonometry.
+static void clock_needle(volatile uint8_t *frame, int angle, int length, uint8_t color) {
+  int x0 = CLK_CX, y0 = CLK_CY;
+  const int x1 = x0 + clock_off(length * isin(angle));
+  const int y1 = y0 - clock_off(length * isin(angle + 90));
+
+  const int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+  const int dy = -(y1 > y0 ? y1 - y0 : y0 - y1);
+  const int stepx = x0 < x1 ? 1 : -1;
+  const int stepy = y0 < y1 ? 1 : -1;
+  int error = dx + dy;
+
+  while (1) {
+    car_rect(frame, x0 - 1, y0, x0 + 1, y0 + 2, color);
+    if (x0 == x1 && y0 == y1)
+      break;
+    const int error2 = error * 2;
+    if (error2 >= dy) {
+      if (x0 == x1)
+        break;
+      error += dy;
+      x0 += stepx;
+    }
+    if (error2 <= dx) {
+      if (y0 == y1)
+        break;
+      error += dx;
+      y0 += stepy;
+    }
+  }
+}
+
+static void clock_face(volatile uint8_t *frame) {
+  car_rrect(frame, CLK_FACE_X, CLK_FACE_Y, CLK_FACE_X + CLK_FACE_SZ, CLK_FACE_Y + CLK_FACE_SZ, CAL_LINE);
+  car_rrect(frame, CLK_FACE_X + 2, CLK_FACE_Y + 2, CLK_FACE_X + CLK_FACE_SZ - 2, CLK_FACE_Y + CLK_FACE_SZ - 2, BAR_WHITE);
+
+  // Hour marks: small squares, with numbers at 12, 3, 6 and 9.
+  static const char *const nums[4] = { "12", "3", "6", "9" };
+  for (int h = 0; h < 12; h++) {
+    const int sx = clock_off(38 * isin(h * 30)), sy = -clock_off(38 * isin(h * 30 + 90));
+    if (h % 3)
+      car_rect(frame, CLK_CX + sx - 1, CLK_CY + sy - 1, CLK_CX + sx + 2, CLK_CY + sy + 2, CLK_HAND);
+    else
+      text_center(frame, nums[h / 3], CLK_CX + sx, CLK_CY + sy - 8, CLK_HAND);
+  }
 }
 
 void render_clock(volatile uint8_t *frame) {
-  ds_background(frame);
+  ds_background(frame, BG_CLOCK);
   dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
   draw_text_ovf("A: Set time", frame, 8, 144, SCREEN_WIDTH - 16);
 
@@ -1770,41 +1896,42 @@ void render_clock(volatile uint8_t *frame) {
   const unsigned year = d.year, month = d.month, day = d.day;
   char buf[24];
 
-  // Big clock, left panel. The colon blinks every second.
-  clock_digit(frame,  2, CLK_DIGIT_Y, d.hour / 10);
-  clock_digit(frame, 22, CLK_DIGIT_Y, d.hour % 10);
-  if (!(d.sec & 1)) {
-    car_rect(frame, 43, CLK_DIGIT_Y + 10, 47, CLK_DIGIT_Y + 14, FT_COLOR);
-    car_rect(frame, 43, CLK_DIGIT_Y + 22, 47, CLK_DIGIT_Y + 26, FT_COLOR);
-  }
-  clock_digit(frame, 50, CLK_DIGIT_Y, d.min / 10);
-  clock_digit(frame, 70, CLK_DIGIT_Y, d.min % 10);
+  // Analog clock: hour and minute hands in grey, seconds in the accent color.
+  clock_face(frame);
+  clock_needle(frame, (d.hour % 12) * 30 + d.min / 2, 24, CLK_HAND);
+  clock_needle(frame, d.min * 6, 30, CLK_HAND);
+  clock_needle(frame, d.sec * 6, 36, ACC_COLOR);
+  car_rect(frame, CLK_CX - 2, CLK_CY - 2, CLK_CX + 3, CLK_CY + 3, CLK_PIN);
 
-  npf_snprintf(buf, sizeof(buf), "%02d", d.sec);
-  draw_central_text(buf, frame, CLK_CX, CLK_DIGIT_Y + CLK_DIGIT_H + 4);
-  draw_central_text(clk_wdays[clock_wday(now)], frame, CLK_CX, 90);
-  npf_snprintf(buf, sizeof(buf), "%d %s %d", day, clk_months[month - 1], 2000 + year);
-  draw_central_text(buf, frame, CLK_CX, 108);
-
-  // Divider.
-  car_rect(frame, CAL_X - 6, 20, CAL_X - 4, 140, FG_COLOR);
-
-  // Calendar, right panel: month title, weekday initials and a 7x6 day grid.
-  const int cx0 = CAL_X;
-  npf_snprintf(buf, sizeof(buf), "%s %d", clk_months[month - 1], 2000 + year);
-  draw_central_text(buf, frame, cx0 + CAL_COL_W * 7 / 2, 16);
-  for (unsigned c = 0; c < 7; c++)
-    draw_central_text(clk_wdays_short[c], frame, cx0 + c * CAL_COL_W + CAL_COL_W / 2, 32);
-
+  // Calendar, on the tile grid: a title row, a weekday header row and as many
+  // week rows as the month needs. Sunday and Saturday columns are tinted.
   const unsigned first = clock_wday(date2timestamp(&(t_dec_date){ .year = d.year, .month = d.month, .day = 1 }));
+  const unsigned weeks = (first + clock_dim(year, month) + 6) / 7;
+  const int bottom = 16 + (2 + weeks) * CAL_TILE;
+  car_rect(frame, CAL_X, 16, SCREEN_WIDTH, bottom, BAR_WHITE);
+  car_rect(frame, CAL_X, 48, CAL_X + CAL_TILE, bottom, CAL_PINK);
+  car_rect(frame, CAL_X + 6 * CAL_TILE, 48, SCREEN_WIDTH, bottom, CAL_LBLUE);
+  car_outline(frame, CAL_X, 16, SCREEN_WIDTH, bottom, 1, CAL_LINE);
+
+  npf_snprintf(buf, sizeof(buf), "%02d/%d", month, 2000 + year);
+  text_center(frame, buf, CAL_X + CAL_TILE * 7 / 2, 16, CAL_TXT);
+  for (unsigned c = 0; c < 7; c++) {
+    const int x = CAL_X + c * CAL_TILE;
+    car_rect(frame, x, 32, x + CAL_TILE, 48, c == 0 ? CAL_HRED : c == 6 ? CAL_HBLUE : CAL_HGRAY);
+    text_center(frame, clk_wdays_short[c], x + CAL_TILE / 2, 32, BAR_WHITE);
+  }
+
   for (unsigned dd = 1; dd <= clock_dim(year, month); dd++) {
     const unsigned idx = first + dd - 1;
-    const int x = cx0 + (idx % 7) * CAL_COL_W;
-    const int y = 48 + (idx / 7) * 16;
-    if (dd == day)
-      car_rect(frame, x, y + 1, x + CAL_COL_W, y + 15, FG_COLOR);
+    const int x = CAL_X + (idx % 7) * CAL_TILE;
+    const int y = 48 + (idx / 7) * CAL_TILE;
+    uint8_t color = (idx % 7) == 0 ? CAL_RED : (idx % 7) == 6 ? CAL_BLUE : CAL_TXT;
+    if (dd == day) {
+      car_rrect(frame, x + 1, y + 1, x + CAL_TILE - 1, y + CAL_TILE - 1, ACC_COLOR);
+      color = BAR_TX;
+    }
     npf_snprintf(buf, sizeof(buf), "%u", dd);
-    draw_central_text(buf, frame, x + CAL_COL_W / 2, y);
+    text_center(frame, buf, x + CAL_TILE / 2, y, color);
   }
 }
 
@@ -1829,16 +1956,18 @@ enum {
   HB_COUNT,
 };
 
+// Buttons sit on the 48x48 tile grid of the background (lines at x multiple
+// of 48, y = 16 + 48k), 2 pixels in from the grid lines.
 static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
-  [HB_FLASH]    = {   8,  22, 232,  58 },
-  [HB_RECENT]   = {   8,  62, 118,  98 },
-  [HB_HWTEST]   = { 122,  62, 232,  98 },
-  [HB_CAROUSEL] = {   8, 102, 232, 132 },
-  [HB_THEME]    = {   8, 136,  48, 158 },
-  [HB_UISET]    = {  54, 136,  94, 158 },
-  [HB_SETTINGS] = { 100, 136, 140, 158 },
-  [HB_ABOUT]    = { 146, 136, 186, 158 },
-  [HB_TIME]     = { 192, 136, 232, 158 },
+  [HB_FLASH]    = {   2,  18, 238,  62 },
+  [HB_RECENT]   = {   2,  66, 119, 110 },
+  [HB_HWTEST]   = { 121,  66, 238, 110 },
+  [HB_CAROUSEL] = {   2, 114, 238, 136 },
+  [HB_THEME]    = {   2, 138,  46, 158 },
+  [HB_UISET]    = {  50, 138,  94, 158 },
+  [HB_SETTINGS] = {  98, 138, 142, 158 },
+  [HB_ABOUT]    = { 146, 138, 190, 158 },
+  [HB_TIME]     = { 194, 138, 238, 158 },
 };
 
 // Where each button leads to with up, down, left, right (-1: nowhere).
@@ -1888,11 +2017,39 @@ static void home_brackets(volatile uint8_t *frame, int b) {
   car_rect(frame, x1 - th, y1 - len, x1, y1, ACC_COLOR);
 }
 
-// Game cartridge (GBA) and memory chip (flash) shapes, 32x22.
-static void home_icon_cart(volatile uint8_t *frame, int x, int y) {
-  car_rect(frame, x + 4, y, x + 28, y + 4, FT_COLOR);
-  car_rect(frame, x, y + 4, x + 32, y + 22, FT_COLOR);
-  car_rect(frame, x + 6, y + 8, x + 26, y + 18, BG_COLOR);
+// Smaller cartridge (24x16) for the carousel button.
+static void home_icon_cart_small(volatile uint8_t *frame, int x, int y) {
+  car_rect(frame, x + 3, y, x + 21, y + 3, FT_COLOR);
+  car_rect(frame, x, y + 3, x + 24, y + 16, FT_COLOR);
+  car_rect(frame, x + 4, y + 6, x + 20, y + 13, BG_COLOR);
+}
+
+// Recent games: a history clock (ring with a gap and an arrow head), 32x32.
+static void home_icon_recent(volatile uint8_t *frame, int x, int y) {
+  const int cx = x + 16, cy = y + 16;
+  home_disc(frame, cx, cy, 14, FT_COLOR);
+  home_disc(frame, cx, cy, 11, BG_COLOR);
+  car_rect(frame, x, y + 8, x + 9, y + 15, HI_COLOR);             // Gap in the ring
+  car_rect(frame, x + 2, y + 12, x + 9, y + 14, FT_COLOR);        // Arrow head (pointing down)
+  car_rect(frame, x + 3, y + 14, x + 8, y + 15, FT_COLOR);
+  car_rect(frame, x + 4, y + 15, x + 7, y + 16, FT_COLOR);
+  car_rect(frame, cx - 1, cy - 8, cx + 1, cy + 1, FT_COLOR);      // Hands
+  car_rect(frame, cx - 1, cy, cx + 6, cy + 2, FT_COLOR);
+}
+
+// Hardware test: a gear, 32x32.
+static void home_icon_gear(volatile uint8_t *frame, int x, int y) {
+  const int cx = x + 16, cy = y + 16;
+  home_disc(frame, cx, cy, 11, FT_COLOR);
+  car_rect(frame, cx - 3, cy - 15, cx + 3, cy - 9, FT_COLOR);     // Teeth
+  car_rect(frame, cx - 3, cy + 9, cx + 3, cy + 15, FT_COLOR);
+  car_rect(frame, cx - 15, cy - 3, cx - 9, cy + 3, FT_COLOR);
+  car_rect(frame, cx + 9, cy - 3, cx + 15, cy + 3, FT_COLOR);
+  for (int i = -1; i <= 1; i += 2)
+    for (int j = -1; j <= 1; j += 2)
+      car_rect(frame, cx + i * 10 - 2, cy + j * 10 - 2, cx + i * 10 + 2, cy + j * 10 + 2, FT_COLOR);
+  home_disc(frame, cx, cy, 5, BG_COLOR);
+  home_disc(frame, cx, cy, 2, FT_COLOR);
 }
 
 static void home_icon_chip(volatile uint8_t *frame, int x, int y) {
@@ -2023,7 +2180,7 @@ static void render_infobar(volatile uint8_t *frame) {
 }
 
 void render_home(volatile uint8_t *frame) {
-  ds_background(frame);
+  ds_background(frame, BG_HOME);
 
   for (int b = HB_FLASH; b <= HB_CAROUSEL; b++)
     home_button(frame, b);
@@ -2032,35 +2189,35 @@ void render_home(volatile uint8_t *frame) {
   const int tcx = (home_rects[HB_FLASH].x0 + 44 + home_rects[HB_FLASH].x1) / 2;
 
   // Flash games: games written to the cart memory (fast loading ROMs).
-  home_icon_chip(frame, home_rects[HB_FLASH].x0 + 8, home_rects[HB_FLASH].y0 + 7);
-  draw_central_text("Flash games", frame, tcx, home_rects[HB_FLASH].y0 + 2);
+  home_icon_chip(frame, home_rects[HB_FLASH].x0 + 10, home_rects[HB_FLASH].y0 + 11);
+  draw_central_text("Flash games", frame, tcx, home_rects[HB_FLASH].y0 + 4);
   #ifdef SUPPORT_NORGAMES
   npf_snprintf(buf, sizeof(buf), "%u games", (unsigned)smenu.fbrowser.maxentries);
   #else
   npf_snprintf(buf, sizeof(buf), "Not on this cart");
   #endif
-  draw_central_text(buf, frame, tcx, home_rects[HB_FLASH].y0 + 18);
+  draw_central_text(buf, frame, tcx, home_rects[HB_FLASH].y0 + 22);
 
-  // Recent games and hardware test. Placeholder icons for now (black rectangles).
+  // Recent games and hardware test.
   static const char *const names[2][2] = { { "Recent", "games" }, { "Hardware", "test" } };
   for (int b = HB_RECENT; b <= HB_HWTEST; b++) {
     const int x0 = home_rects[b].x0, y0 = home_rects[b].y0;
-    car_rect(frame, x0 + 8, y0 + 8, x0 + 36, y0 + 28, 0);
-    const int cx = (x0 + 40 + home_rects[b].x1) / 2;
-    draw_central_text(names[b - HB_RECENT][0], frame, cx, y0 + 2);
-    draw_central_text(names[b - HB_RECENT][1], frame, cx, y0 + 18);
+    (b == HB_RECENT ? home_icon_recent : home_icon_gear)(frame, x0 + 6, y0 + 6);
+    const int cx = (x0 + 42 + home_rects[b].x1) / 2;
+    draw_central_text(names[b - HB_RECENT][0], frame, cx, y0 + 4);
+    draw_central_text(names[b - HB_RECENT][1], frame, cx, y0 + 22);
   }
 
   // Carousel.
-  home_icon_cart(frame, home_rects[HB_CAROUSEL].x0 + 8, home_rects[HB_CAROUSEL].y0 + 4);
-  draw_central_text("Game carousel", frame, tcx, home_rects[HB_CAROUSEL].y0 + 7);
+  home_icon_cart_small(frame, home_rects[HB_CAROUSEL].x0 + 10, home_rects[HB_CAROUSEL].y0 + 3);
+  draw_central_text("Game carousel", frame, tcx, home_rects[HB_CAROUSEL].y0 + 3);
 
   // Bottom row: theme, UI settings, settings, about and time.
   static void (*const icons[HB_COUNT - HB_THEME])(volatile uint8_t*, int, int) = {
     home_icon_theme, home_icon_uiset, home_icon_settings, home_icon_about, home_icon_time,
   };
   for (int b = HB_THEME; b <= HB_TIME; b++)
-    icons[b - HB_THEME](frame, (home_rects[b].x0 + home_rects[b].x1) / 2, 147);
+    icons[b - HB_THEME](frame, (home_rects[b].x0 + home_rects[b].x1) / 2, 148);
 
   home_brackets(frame, smenu.home.sel);
 }
@@ -2616,10 +2773,13 @@ void render_info(volatile uint8_t *frame) {
 
   switch (smenu.info.selector) {
   case 0:
-    draw_central_text("by davidgf", frame, 120, 70);
+    // Title, drawn twice one pixel apart to look bolder.
+    draw_central_text("AGoodShell++", frame, 120, 64);
+    draw_central_text("AGoodShell++", frame, 121, 64);
+    draw_central_text("based on SuperFW by davidgf", frame, 120, 82);
     npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lu (%08lx)", vmaj, vmin, gitver);
-    draw_central_text(tmp, frame, 120, 95);
-    draw_central_text(FW_FLAVOUR " variant", frame, 120, 114);
+    draw_central_text(tmp, frame, 120, 100);
+    draw_central_text(FW_FLAVOUR " variant", frame, 120, 118);
     break;
   case 1:
     draw_central_text("Flash info", frame, 120, 70);
@@ -2695,6 +2855,18 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[BAR_GREEN] = RGB2GBA(0x30d040);
   MEM_PALETTE[BAR_ORANGE] = RGB2GBA(0xf08020);
   MEM_PALETTE[BAR_WHITE] = 0x7FFF;
+  MEM_PALETTE[CAL_TXT]   = RGB2GBA(0x303038);
+  MEM_PALETTE[CAL_RED]   = RGB2GBA(0xd01c1c);
+  MEM_PALETTE[CAL_BLUE]  = RGB2GBA(0x1c3cd0);
+  MEM_PALETTE[CAL_HRED]  = RGB2GBA(0xd83030);
+  MEM_PALETTE[CAL_HBLUE] = RGB2GBA(0x3058d8);
+  MEM_PALETTE[CAL_HGRAY] = RGB2GBA(0x606068);
+  MEM_PALETTE[CAL_PINK]  = RGB2GBA(0xf8c8dc);
+  MEM_PALETTE[CAL_LBLUE] = RGB2GBA(0xc8d8f8);
+  MEM_PALETTE[CAL_LINE]  = RGB2GBA(0x9098a0);
+  MEM_PALETTE[CLK_HAND]  = RGB2GBA(0x797979);   // Needle and pin colors from TWiLight Menu++
+  MEM_PALETTE[CLK_PIN]   = RGB2GBA(0x494949);
+  MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xa0a0a0);
   // Scanline rows are a bit closer to the text color than the others.
   MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
   MEM_PALETTE[SL_GRID] = mix15(themes[thnum].hi_color, themes[thnum].ft_color, 14);
