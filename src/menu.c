@@ -41,6 +41,7 @@
 
 #include "res/icons.h"
 #include "res/logo.h"
+#include "res/home_icons.h"
 
 extern t_card_info sd_info;
 extern bool fastew;
@@ -120,6 +121,7 @@ enum {
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
 #define GRAD_N           32
+#define HOME_ICON_BASE   95      // Palette of the TWiLight Menu++ corner icons (bitmap index i -> 95 + i)
 
 // Sound registers (PSG noise channel), used for the clock tick.
 #define SND4_L           (*((volatile uint16_t *) 0x04000078))
@@ -2173,32 +2175,35 @@ static void home_icon_chip(volatile uint8_t *frame, int x, int y) {
 }
 
 // Small icons for the bottom buttons, centered at (cx, cy).
-static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
-  if (menu_theme == THEME_DARK) {                     // Moon: a disc with a bite
-    home_crescent(frame, cx, cy, 8, cx + 5, cy - 3, 7, FT_COLOR);
-  } else {                                            // Sun: a disc with rays
-    home_disc(frame, cx, cy, 4, FT_COLOR);
-    car_rect(frame, cx - 1, cy - 9, cx + 1, cy - 6, FT_COLOR);
-    car_rect(frame, cx - 1, cy + 6, cx + 1, cy + 9, FT_COLOR);
-    car_rect(frame, cx - 9, cy - 1, cx - 6, cy + 1, FT_COLOR);
-    car_rect(frame, cx + 6, cy - 1, cx + 9, cy + 1, FT_COLOR);
-    for (int i = -1; i <= 1; i += 2)
-      for (int j = -1; j <= 1; j += 2)
-        car_rect(frame, cx + i * 6 - 1, cy + j * 6 - 1, cx + i * 6 + 1, cy + j * 6 + 1, FT_COLOR);
+// Draws one of the TWiLight Menu++ corner icons, centered, scaled by an
+// integer factor (nearest neighbor). Index 0 is transparent.
+static void home_icon_bitmap(volatile uint8_t *frame, int cx, int cy, unsigned n, int scale) {
+  const int w = home_icons[n].w, h = home_icons[n].h;
+  const int x0 = cx - w * scale / 2, y0 = cy - h * scale / 2;
+  for (int r = 0; r < h; r++) {
+    const uint8_t *row = &home_icons[n].data[r * w];
+    for (int c = 0; c < w; ) {
+      if (!row[c]) { c++; continue; }
+      int e = c;
+      while (e < w && row[e] == row[c])
+        e++;
+      car_rect(frame, x0 + c * scale, y0 + r * scale, x0 + e * scale, y0 + (r + 1) * scale, HOME_ICON_BASE + row[c]);
+      c = e;
+    }
   }
 }
 
-static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
-  car_outline(frame, cx - 7, cy - 10, cx + 7, cy - 1, 2, FT_COLOR);        // Two screens
-  car_outline(frame, cx - 7, cy + 1, cx + 7, cy + 10, 2, FT_COLOR);
+// Theme: the brightness sun of TWiLight Menu++, dimmed in the dark theme.
+static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
+  home_icon_bitmap(frame, cx, cy, menu_theme == THEME_DARK ? HOME_ICON_DIM : HOME_ICON_SUN, 2);
 }
-
+// Settings: the DS icon of its settings button.
+static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
+  home_icon_bitmap(frame, cx, cy, HOME_ICON_SETTINGS, 1);
+}
+// Time: the alarm clock.
 static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
-  home_disc(frame, cx - 7, cy - 7, 3, FT_COLOR);                    // Alarm bells
-  home_disc(frame, cx + 7, cy - 7, 3, FT_COLOR);
-  home_ring(frame, cx, cy + 1, 8, 6, FT_COLOR, 0, 0, 0);
-  car_rect(frame, cx, cy - 4, cx + 1, cy + 2, FT_COLOR);            // Hands
-  car_rect(frame, cx, cy + 1, cx + 4, cy + 2, FT_COLOR);
+  home_icon_bitmap(frame, cx, cy, HOME_ICON_CLOCK, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -2306,7 +2311,7 @@ void render_home(volatile uint8_t *frame) {
   x0 = home_rects[HB_FLASH].x0; y0 = home_rects[HB_FLASH].y0; x1 = home_rects[HB_FLASH].x1; y1 = home_rects[HB_FLASH].y1;
   home_icon_chip(frame, x0 + 8, y0 + 11);
   home_plate(frame, x0 + 44, y0 + 4, x1 - 4, y1 - 4);
-  draw_central_text("Flash games", frame, (x0 + 44 + x1 - 4) / 2, y0 + 6);
+  draw_central_text("Internal Flash", frame, (x0 + 44 + x1 - 4) / 2, y0 + 6);
   #ifdef SUPPORT_NORGAMES
   npf_snprintf(buf, sizeof(buf), "%u games", (unsigned)smenu.fbrowser.maxentries);
   #else
@@ -2332,7 +2337,7 @@ void render_home(volatile uint8_t *frame) {
   x0 = home_rects[HB_CAROUSEL].x0; y0 = home_rects[HB_CAROUSEL].y0; x1 = home_rects[HB_CAROUSEL].x1; y1 = home_rects[HB_CAROUSEL].y1;
   home_icon_cart_small(frame, x0 + 8, y0 + 3);
   home_plate(frame, x0 + 38, y0 + 3, x1 - 4, y1 - 3);
-  draw_central_text("Game carousel", frame, (x0 + 38 + x1 - 4) / 2, y0 + 3);
+  draw_central_text("Browser", frame, (x0 + 38 + x1 - 4) / 2, y0 + 3);
 
   // Bottom row: theme, settings and time.
   static void (*const icons[HB_COUNT - HB_THEME])(volatile uint8_t*, int, int) = {
@@ -3016,6 +3021,8 @@ void reload_theme(unsigned thnum) {
   const uint16_t grid = dark ? 0 : themes[thnum].hi_color;
   MEM_PALETTE[GRID_COLOR] = grid;
   MEM_PALETTE[SL_GRID] = mix15(grid, themes[thnum].ft_color, 14);
+  for (unsigned i = 0; i < HOME_ICON_COLORS; i++)
+    MEM_PALETTE[HOME_ICON_BASE + 1 + i] = home_icon_pal[i];
   MEM_PALETTE[BTN_EDGE] = dark ? themes[thnum].fg_color : themes[thnum].ft_color;
   // Button gradient: lighter at the top (darker in the dark theme), many shades.
   {
