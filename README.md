@@ -1,20 +1,19 @@
-
-SuperFW
+AGoodShell++
 =======
 
-An alternative firmware for Supercard GBA flash carts (and derivatives/clones)
+A fork of an alternative firmware for Supercard GBA flash carts (and derivatives/clones)
 
 This project aims to provide a more modern and better firmware for Supercard
 flash carts (which are still widely used and very cheaply available). The goal
-is to add many features only present in more expensive or sophisticated flash
-carts. Unfortunately we are limited to the actual hardware so certain features
-are impossible or very complex to implement.
+is to bring DS-like interface to Gameboy Advance gaming console.
 
-Find the website and documentation at https://superfw.davidgf.net/
-
+This is fork of SuperFW and its website and documentation are at https://superfw.davidgf.net/
+Warning: I have limited testing opportunities(only SuperChis and DS Phat), so please report all issues
+you found that are not present on official SuperFW on Issues tab of this fork
 
 Installation
 ------------
+Should be same as on SuperFW
 
 Check https://superfw.davidgf.net/docs/install/flash/ for more details.
 
@@ -154,5 +153,12 @@ heapsort (3-BSD) and fatfs (1-BSD-like). apultra and upkr (only used at
 build-time) were re-implemented in C++ using the original sources as reference
 and an LLM (they are under zlib and public domain respecitvely). Some
 linkerscript/crt0 code was adapted from AntonioND's work under CC0.
+This specific forks also employs some elements from TwiLightMenu++(GPL-3.0),
+Galmuri font by quiple(OFL-1.1)
 
-
+Special credits
+--------
+ - SuperFW developers
+ - Few buckets of water to power LLM servers
+ - Piece of 99% chocolate
+ - Code of millions(or billions?) programmers and coders.
