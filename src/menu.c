@@ -114,6 +114,17 @@ enum {
 #define CLK_HAND         41
 #define CLK_PIN          42
 #define CLK_TICK         43
+#define GRID_COLOR       44      // Background grid lines (black in the dark theme)
+#define BTN_EDGE         45      // Home button outlines
+#define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
+#define GRAD_N           32
+
+// Sound registers (PSG noise channel), used for the clock tick.
+#define SND4_L           (*((volatile uint16_t *) 0x04000078))
+#define SND4_H           (*((volatile uint16_t *) 0x0400007C))
+#define SNDCNT_L         (*((volatile uint16_t *) 0x04000080))
+#define SNDCNT_H         (*((volatile uint16_t *) 0x04000082))
+#define SNDCNT_X         (*((volatile uint16_t *) 0x04000084))
 #define IGM_PAL_FG      240
 #define IGM_PAL_BG      241
 #define IGM_PAL_HI      242
@@ -1588,32 +1599,31 @@ static unsigned entry_icon_kind(const t_centry *e) {
 }
 
 // Draws an icon of size sz (even) centered horizontally at cx, top at y.
+// Only outlines are drawn, so whatever is below shows through.
 static void car_icon(volatile uint8_t *frame, int cx, int y, int sz, unsigned kind) {
   const int x = cx - sz / 2, u = sz / 8;
   switch (kind) {
   case ICON_KIND_FOLDER:
-    car_rect(frame, x, y + u, x + 3 * u, y + 3 * u, FT_COLOR);               // Tab
-    car_rect(frame, x, y + 2 * u, x + sz, y + sz - u, FT_COLOR);             // Body
-    car_rect(frame, x + 2, y + 2 * u + 2, x + sz - 2, y + sz - u - 2, ACC_COLOR);
-    car_rect(frame, x + 2, y + 2 * u + 2, x + sz - 2, y + 3 * u + 1, BG_COLOR);   // Open flap edge
+    car_rect(frame, x, y + u, x + 3 * u, y + 2 * u + 2, FT_COLOR);           // Tab
+    car_outline(frame, x, y + 2 * u, x + sz, y + sz - u, 2, FT_COLOR);       // Body
+    car_rect(frame, x + 2, y + 3 * u, x + sz - 2, y + 3 * u + 2, FT_COLOR);  // Open flap edge
     break;
   case ICON_KIND_FILE: {
     const int x0 = x + u, x1 = x + sz - u, fold = 2 * u;
-    car_rect(frame, x0, y, x1 - fold, y + sz, FT_COLOR);                     // Page, with the top right corner folded
-    car_rect(frame, x1 - fold, y + fold, x1, y + sz, FT_COLOR);
-    car_rect(frame, x0 + 2, y + 2, x1 - fold, y + sz - 2, BG_COLOR);
-    car_rect(frame, x1 - fold, y + fold, x1 - 2, y + sz - 2, BG_COLOR);
-    car_rect(frame, x1 - fold, y, x1, y + fold, HI_COLOR);                   // Fold
-    car_rect(frame, x1 - fold, y + fold - 2, x1 - 2, y + fold, FT_COLOR);
-    car_rect(frame, x1 - fold, y + fold - 2, x1 - fold + 2, y + fold + 2, FT_COLOR);
+    car_rect(frame, x0, y, x1 - fold, y + 2, FT_COLOR);                      // Page outline, top right corner folded
+    car_rect(frame, x0, y, x0 + 2, y + sz, FT_COLOR);
+    car_rect(frame, x0, y + sz - 2, x1, y + sz, FT_COLOR);
+    car_rect(frame, x1 - 2, y + fold, x1, y + sz, FT_COLOR);
+    car_rect(frame, x1 - fold, y, x1 - fold + 2, y + fold, FT_COLOR);        // Fold
+    car_rect(frame, x1 - fold, y + fold - 2, x1, y + fold, FT_COLOR);
     for (int i = 0; i < 3; i++)                                              // Text lines
       car_rect(frame, x0 + 2 + u, y + 3 * u + i * (2 * u - 1), x1 - 2 - u, y + 3 * u + i * (2 * u - 1) + 2, FT_COLOR);
     break; }
   default:
-    car_rect(frame, x + u, y + u, x + sz - u, y + 3 * u, FT_COLOR);          // Cartridge: notch, body and label
-    car_rect(frame, x, y + 2 * u, x + sz, y + sz - u, FT_COLOR);
-    car_rect(frame, x + u + 2, y + 3 * u, x + sz - u - 2, y + 6 * u - 1, BG_COLOR);
-    car_rect(frame, x + 2 * u, y + sz - 2 * u, x + sz - 2 * u, y + sz - u, ACC_COLOR);
+    car_rect(frame, x + u, y + u, x + sz - u, y + 3 * u, FT_COLOR);          // Cartridge: notch, body outline, label outline
+    car_outline(frame, x, y + 2 * u, x + sz, y + sz - u, 2, FT_COLOR);
+    car_outline(frame, x + u + 2, y + 3 * u + 2, x + sz - u - 2, y + 6 * u - 1, 1, FT_COLOR);
+    car_rect(frame, x + 2 * u, y + sz - 2 * u, x + sz - 2 * u, y + sz - u - 1, FT_COLOR);   // Contacts
     break;
   }
 }
@@ -1784,7 +1794,7 @@ static void bg_init(void) {
     for (unsigned t = 0; t < 4; t++) {
       uint8_t *row = (uint8_t*)bg_rows[g][t];
       const uint8_t bg = (t & 1) ? SL_BG : BG_COLOR;
-      const uint8_t ln = (t & 1) ? SL_GRID : HI_COLOR;
+      const uint8_t ln = (t & 1) ? SL_GRID : GRID_COLOR;
       for (unsigned x = 0; x < SCREEN_WIDTH; x++)
         row[x] = ((t & 2) || (x % bg_tiles[g][0]) == 0) ? ln : bg;
     }
@@ -1871,8 +1881,8 @@ static void clock_needle(volatile uint8_t *frame, int angle, int length, uint8_t
 }
 
 static void clock_face(volatile uint8_t *frame) {
-  car_rrect(frame, CLK_FACE_X, CLK_FACE_Y, CLK_FACE_X + CLK_FACE_SZ, CLK_FACE_Y + CLK_FACE_SZ, CAL_LINE);
-  car_rrect(frame, CLK_FACE_X + 2, CLK_FACE_Y + 2, CLK_FACE_X + CLK_FACE_SZ - 2, CLK_FACE_Y + CLK_FACE_SZ - 2, BAR_WHITE);
+  car_rect(frame, CLK_FACE_X, CLK_FACE_Y, CLK_FACE_X + CLK_FACE_SZ, CLK_FACE_Y + CLK_FACE_SZ, 0);     // Black square frame
+  car_rect(frame, CLK_FACE_X + 2, CLK_FACE_Y + 2, CLK_FACE_X + CLK_FACE_SZ - 2, CLK_FACE_Y + CLK_FACE_SZ - 2, BAR_WHITE);
 
   // Hour marks: small squares, with numbers at 12, 3, 6 and 9.
   static const char *const nums[4] = { "12", "3", "6", "9" };
@@ -1911,6 +1921,11 @@ void render_clock(volatile uint8_t *frame) {
   car_rect(frame, CAL_X, 16, SCREEN_WIDTH, bottom, BAR_WHITE);
   car_rect(frame, CAL_X, 48, CAL_X + CAL_TILE, bottom, CAL_PINK);
   car_rect(frame, CAL_X + 6 * CAL_TILE, 48, SCREEN_WIDTH, bottom, CAL_LBLUE);
+  // Grid lines on the same 16x16 grid as the background (not scanlines).
+  for (int x = CAL_X; x < SCREEN_WIDTH; x += CAL_TILE)
+    car_rect(frame, x, 32, x + 1, bottom, CAL_LINE);
+  for (int y = 32; y < bottom; y += CAL_TILE)
+    car_span(frame, y, CAL_X, SCREEN_WIDTH, CAL_LINE);
   car_outline(frame, CAL_X, 16, SCREEN_WIDTH, bottom, 1, CAL_LINE);
 
   npf_snprintf(buf, sizeof(buf), "%02d/%d", month, 2000 + year);
@@ -1936,9 +1951,10 @@ void render_clock(volatile uint8_t *frame) {
 }
 
 // ---------------------------------------------------------------------------
-// Home screen, modeled after the Nintendo DS (Phat) start menu: big buttons on
-// a grid background, a selection marked by blue corner brackets and three
-// small buttons at the bottom (theme, settings, time). Plain shapes only.
+// Home screen, modeled after the Nintendo DS (Phat) start menu: buttons with a
+// gradient face and a label plate on a grid background, a selection marked by
+// corner brackets and three small buttons at the bottom (theme, settings,
+// time). Plain shapes only; the icons are outlines so the face shows through.
 // ---------------------------------------------------------------------------
 
 void reload_theme(unsigned thnum);
@@ -1949,24 +1965,21 @@ enum {
   HB_HWTEST,         // Hardware test (tools) tab
   HB_CAROUSEL,       // Opens the carousel
   HB_THEME,          // Switches the light/dark theme
-  HB_UISET,          // Opens the UI settings tab
-  HB_SETTINGS,       // Opens the settings tab
-  HB_ABOUT,          // Opens the about tab
+  HB_SETTINGS,       // Opens the settings tabs (settings, UI settings, about)
   HB_TIME,           // Sets the clock
   HB_COUNT,
 };
 
 // Buttons sit on the 48x48 tile grid of the background (lines at x multiple
-// of 48, y = 16 + 48k), 2 pixels in from the grid lines.
+// of 48, y = 16 + 48k), 2 pixels in from the grid lines: flash games and the
+// carousel are 3 tiles wide, recent games 2 and hardware test 1, centered.
 static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
-  [HB_FLASH]    = {   2,  18, 238,  62 },
-  [HB_RECENT]   = {   2,  66, 119, 110 },
-  [HB_HWTEST]   = { 121,  66, 238, 110 },
-  [HB_CAROUSEL] = {   2, 114, 238, 136 },
+  [HB_FLASH]    = {  50,  18, 190,  62 },
+  [HB_RECENT]   = {  50,  66, 142, 110 },
+  [HB_HWTEST]   = { 146,  66, 190, 110 },
+  [HB_CAROUSEL] = {  50, 114, 190, 136 },
   [HB_THEME]    = {   2, 138,  46, 158 },
-  [HB_UISET]    = {  50, 138,  94, 158 },
   [HB_SETTINGS] = {  98, 138, 142, 158 },
-  [HB_ABOUT]    = { 146, 138, 190, 158 },
   [HB_TIME]     = { 194, 138, 238, 158 },
 };
 
@@ -1976,30 +1989,84 @@ static const int8_t home_nav[HB_COUNT][4] = {
   [HB_RECENT]   = { HB_FLASH,    HB_CAROUSEL, -1,          HB_HWTEST },
   [HB_HWTEST]   = { HB_FLASH,    HB_CAROUSEL, HB_RECENT,   -1 },
   [HB_CAROUSEL] = { HB_RECENT,   HB_SETTINGS, -1,          -1 },
-  [HB_THEME]    = { HB_CAROUSEL, -1,          -1,          HB_UISET },
-  [HB_UISET]    = { HB_CAROUSEL, -1,          HB_THEME,    HB_SETTINGS },
-  [HB_SETTINGS] = { HB_CAROUSEL, -1,          HB_UISET,    HB_ABOUT },
-  [HB_ABOUT]    = { HB_CAROUSEL, -1,          HB_SETTINGS, HB_TIME },
-  [HB_TIME]     = { HB_CAROUSEL, -1,          HB_ABOUT,    -1 },
+  [HB_THEME]    = { HB_CAROUSEL, -1,          -1,          HB_SETTINGS },
+  [HB_SETTINGS] = { HB_CAROUSEL, -1,          HB_THEME,    HB_TIME },
+  [HB_TIME]     = { HB_CAROUSEL, -1,          HB_SETTINGS, -1 },
 };
+
+static int isqrt_floor(int v) {
+  int w = 0;
+  while ((w + 1) * (w + 1) <= v)
+    w++;
+  return w;
+}
 
 // Filled circle.
 static void home_disc(volatile uint8_t *frame, int cx, int cy, int r, uint8_t color) {
   for (int dy = -r; dy <= r; dy++) {
-    int w = 0;
-    while ((w + 1) * (w + 1) <= r * r - dy * dy)
-      w++;
+    const int w = isqrt_floor(r * r - dy * dy);
     car_span(frame, cy + dy, cx - w, cx + w + 1, color);
   }
 }
 
-// Button face: thin dark outline, light bevel on the top and left sides.
+// Ring (circle with a hole, which stays transparent). Rows in [gy0, gy1) skip
+// everything left of gx1, to leave a gap in the ring.
+static void home_ring(volatile uint8_t *frame, int cx, int cy, int ro, int ri, uint8_t color,
+                      int gx1, int gy0, int gy1) {
+  for (int dy = -ro; dy <= ro; dy++) {
+    const int wo = isqrt_floor(ro * ro - dy * dy);
+    int segs[2][2];
+    int n = 0;
+    if (dy >= -ri && dy <= ri) {
+      const int wi = isqrt_floor(ri * ri - dy * dy);
+      segs[n][0] = cx - wo; segs[n][1] = cx - wi; n++;
+      segs[n][0] = cx + wi + 1; segs[n][1] = cx + wo + 1; n++;
+    } else {
+      segs[n][0] = cx - wo; segs[n][1] = cx + wo + 1; n++;
+    }
+    for (int i = 0; i < n; i++) {
+      int x0 = segs[i][0];
+      if (cy + dy >= gy0 && cy + dy < gy1 && x0 < gx1)
+        x0 = gx1;
+      if (x0 < segs[i][1])
+        car_span(frame, cy + dy, x0, segs[i][1], color);
+    }
+  }
+}
+
+// Circle minus another circle, to draw a crescent without painting over anything.
+static void home_crescent(volatile uint8_t *frame, int cx, int cy, int r, int bx, int by, int rb, uint8_t color) {
+  for (int dy = -r; dy <= r; dy++) {
+    const int w = isqrt_floor(r * r - dy * dy);
+    int a0 = cx - w, a1 = cx + w + 1;
+    const int by_d = cy + dy - by;
+    if (by_d >= -rb && by_d <= rb) {
+      const int wb = isqrt_floor(rb * rb - by_d * by_d);
+      const int b0 = bx - wb, b1 = bx + wb + 1;
+      if (b0 > a0)
+        car_span(frame, cy + dy, a0, MIN(a1, b0), color);
+      if (b1 < a1)
+        car_span(frame, cy + dy, MAX(a0, b1), a1, color);
+    } else {
+      car_span(frame, cy + dy, a0, a1, color);
+    }
+  }
+}
+
+// Button face: a vertical gradient with many shades, and an outline.
 static void home_button(volatile uint8_t *frame, int b) {
   const int x0 = home_rects[b].x0, y0 = home_rects[b].y0, x1 = home_rects[b].x1, y1 = home_rects[b].y1;
-  car_rect(frame, x0, y0, x1, y1, HI_COLOR);
-  car_rect(frame, x0 + 1, y0 + 1, x1 - 1, y0 + 2, BG_COLOR);
-  car_rect(frame, x0 + 1, y0 + 1, x0 + 2, y1 - 1, BG_COLOR);
-  car_outline(frame, x0, y0, x1, y1, 1, FT_COLOR);
+  for (int y = y0; y < y1; y++)
+    car_span(frame, y, x0, x1, GRAD_BASE + (y - y0) * (GRAD_N - 1) / (y1 - y0 - 1));
+  car_outline(frame, x0, y0, x1, y1, 1, BTN_EDGE);
+}
+
+// Label plate: background color with scanlines (same row parity as the
+// screen background) and a thin outline.
+static void home_plate(volatile uint8_t *frame, int x0, int y0, int x1, int y1) {
+  for (int y = y0; y < y1; y++)
+    car_span(frame, y, x0, x1, (y & 1) ? SL_BG : BG_COLOR);
+  car_outline(frame, x0, y0, x1, y1, 1, BTN_EDGE);
 }
 
 // Corner brackets around the selected button.
@@ -2017,19 +2084,17 @@ static void home_brackets(volatile uint8_t *frame, int b) {
   car_rect(frame, x1 - th, y1 - len, x1, y1, ACC_COLOR);
 }
 
-// Smaller cartridge (24x16) for the carousel button.
+// Small cartridge (24x16) for the carousel button: outlines, transparent inside.
 static void home_icon_cart_small(volatile uint8_t *frame, int x, int y) {
   car_rect(frame, x + 3, y, x + 21, y + 3, FT_COLOR);
-  car_rect(frame, x, y + 3, x + 24, y + 16, FT_COLOR);
-  car_rect(frame, x + 4, y + 6, x + 20, y + 13, BG_COLOR);
+  car_outline(frame, x, y + 3, x + 24, y + 16, 2, FT_COLOR);
+  car_outline(frame, x + 6, y + 7, x + 18, y + 12, 1, FT_COLOR);
 }
 
 // Recent games: a history clock (ring with a gap and an arrow head), 32x32.
 static void home_icon_recent(volatile uint8_t *frame, int x, int y) {
   const int cx = x + 16, cy = y + 16;
-  home_disc(frame, cx, cy, 14, FT_COLOR);
-  home_disc(frame, cx, cy, 11, BG_COLOR);
-  car_rect(frame, x, y + 8, x + 9, y + 15, HI_COLOR);             // Gap in the ring
+  home_ring(frame, cx, cy, 14, 11, FT_COLOR, x + 9, y + 8, y + 15);
   car_rect(frame, x + 2, y + 12, x + 9, y + 14, FT_COLOR);        // Arrow head (pointing down)
   car_rect(frame, x + 3, y + 14, x + 8, y + 15, FT_COLOR);
   car_rect(frame, x + 4, y + 15, x + 7, y + 16, FT_COLOR);
@@ -2037,19 +2102,20 @@ static void home_icon_recent(volatile uint8_t *frame, int x, int y) {
   car_rect(frame, cx - 1, cy, cx + 6, cy + 2, FT_COLOR);
 }
 
-// Hardware test: a gear, 32x32.
-static void home_icon_gear(volatile uint8_t *frame, int x, int y) {
-  const int cx = x + 16, cy = y + 16;
-  home_disc(frame, cx, cy, 11, FT_COLOR);
-  car_rect(frame, cx - 3, cy - 15, cx + 3, cy - 9, FT_COLOR);     // Teeth
-  car_rect(frame, cx - 3, cy + 9, cx + 3, cy + 15, FT_COLOR);
-  car_rect(frame, cx - 15, cy - 3, cx - 9, cy + 3, FT_COLOR);
-  car_rect(frame, cx + 9, cy - 3, cx + 15, cy + 3, FT_COLOR);
+// Hardware test: a gear (ring with teeth), sz x sz.
+static void home_icon_gear(volatile uint8_t *frame, int x, int y, int sz) {
+  const int cx = x + sz / 2, cy = y + sz / 2;
+  const int ro = sz * 11 / 32, ri = MAX(2, sz * 5 / 32), tw = MAX(2, sz * 3 / 32), to = sz * 15 / 32;
+  home_ring(frame, cx, cy, ro, ri, FT_COLOR, 0, 0, 0);
+  car_rect(frame, cx - tw, cy - to, cx + tw, cy - ro + 2, FT_COLOR);     // Teeth
+  car_rect(frame, cx - tw, cy + ro - 2, cx + tw, cy + to, FT_COLOR);
+  car_rect(frame, cx - to, cy - tw, cx - ro + 2, cy + tw, FT_COLOR);
+  car_rect(frame, cx + ro - 2, cy - tw, cx + to, cy + tw, FT_COLOR);
+  const int dd = sz * 10 / 32, ds = MAX(1, sz / 16);
   for (int i = -1; i <= 1; i += 2)
     for (int j = -1; j <= 1; j += 2)
-      car_rect(frame, cx + i * 10 - 2, cy + j * 10 - 2, cx + i * 10 + 2, cy + j * 10 + 2, FT_COLOR);
-  home_disc(frame, cx, cy, 5, BG_COLOR);
-  home_disc(frame, cx, cy, 2, FT_COLOR);
+      car_rect(frame, cx + i * dd - ds, cy + j * dd - ds, cx + i * dd + ds, cy + j * dd + ds, FT_COLOR);
+  home_disc(frame, cx, cy, MAX(1, sz / 16), FT_COLOR);
 }
 
 static void home_icon_chip(volatile uint8_t *frame, int x, int y) {
@@ -2057,15 +2123,14 @@ static void home_icon_chip(volatile uint8_t *frame, int x, int y) {
     car_rect(frame, x + 4, y + 2 + i * 5, x + 8, y + 4 + i * 5, FT_COLOR);
     car_rect(frame, x + 24, y + 2 + i * 5, x + 28, y + 4 + i * 5, FT_COLOR);
   }
-  car_rect(frame, x + 8, y, x + 24, y + 22, FT_COLOR);
-  car_rect(frame, x + 11, y + 3, x + 21, y + 19, HI_COLOR);
+  car_outline(frame, x + 8, y, x + 24, y + 22, 2, FT_COLOR);
+  car_outline(frame, x + 12, y + 5, x + 20, y + 17, 1, FT_COLOR);
 }
 
 // Small icons for the bottom buttons, centered at (cx, cy).
 static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
   if (menu_theme == THEME_DARK) {                     // Moon: a disc with a bite
-    home_disc(frame, cx, cy, 8, FT_COLOR);
-    home_disc(frame, cx + 5, cy - 3, 7, BG_COLOR);
+    home_crescent(frame, cx, cy, 8, cx + 5, cy - 3, 7, FT_COLOR);
   } else {                                            // Sun: a disc with rays
     home_disc(frame, cx, cy, 4, FT_COLOR);
     car_rect(frame, cx - 1, cy - 9, cx + 1, cy - 6, FT_COLOR);
@@ -2079,49 +2144,28 @@ static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
 }
 
 static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
-  car_rect(frame, cx - 7, cy - 10, cx + 7, cy + 10, FT_COLOR);      // Two screens
-  car_rect(frame, cx - 5, cy - 8, cx + 5, cy - 1, BG_COLOR);
-  car_rect(frame, cx - 5, cy + 2, cx + 5, cy + 8, BG_COLOR);
+  car_outline(frame, cx - 7, cy - 10, cx + 7, cy - 1, 2, FT_COLOR);        // Two screens
+  car_outline(frame, cx - 7, cy + 1, cx + 7, cy + 10, 2, FT_COLOR);
 }
 
 static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
   home_disc(frame, cx - 7, cy - 7, 3, FT_COLOR);                    // Alarm bells
   home_disc(frame, cx + 7, cy - 7, 3, FT_COLOR);
-  home_disc(frame, cx, cy + 1, 8, FT_COLOR);
-  home_disc(frame, cx, cy + 1, 6, BG_COLOR);
+  home_ring(frame, cx, cy + 1, 8, 6, FT_COLOR, 0, 0, 0);
   car_rect(frame, cx, cy - 4, cx + 1, cy + 2, FT_COLOR);            // Hands
   car_rect(frame, cx, cy + 1, cx + 4, cy + 2, FT_COLOR);
 }
 
-static void home_icon_uiset(volatile uint8_t *frame, int cx, int cy) {
-  home_disc(frame, cx, cy, 9, FT_COLOR);                            // Paint palette
-  home_disc(frame, cx - 4, cy - 3, 2, BG_COLOR);
-  home_disc(frame, cx + 1, cy - 5, 2, BG_COLOR);
-  home_disc(frame, cx + 5, cy - 1, 2, BG_COLOR);
-  home_disc(frame, cx + 2, cy + 5, 3, BG_COLOR);
-}
-
-static void home_icon_about(volatile uint8_t *frame, int cx, int cy) {
-  home_disc(frame, cx, cy, 9, FT_COLOR);                            // An "i" in a disc
-  car_rect(frame, cx - 1, cy - 6, cx + 2, cy - 3, BG_COLOR);
-  car_rect(frame, cx - 1, cy - 1, cx + 2, cy + 6, BG_COLOR);
-}
-
 // ---------------------------------------------------------------------------
-// Top information bar, like the DS one: user name, time, date and a few
-// filler icons, over a gradient of the accent color with dashed separators.
+// Top information bar, like the DS one: user name, page dots, time, date and a
+// few filler icons, over a gradient of the accent color with dashed
+// separators. Time and date take just the room they need.
 // ---------------------------------------------------------------------------
 #define BAR_H        16
-#define BAR_SEP1     82
-#define BAR_SEP2     132
-#define BAR_SEP3     182
+#define BAR_ICONS_X  185        // Filler icons start here (separator just before)
 
 static void bar_text(volatile uint8_t *frame, const char *t, int x) {
   draw_text_idx8_bus16(t, (uint8_t*)&frame[x], SCREEN_WIDTH, BAR_TX);
-}
-
-static void bar_text_center(volatile uint8_t *frame, const char *t, int cx) {
-  bar_text(frame, t, cx - (int)font_width(t) / 2);
 }
 
 static void bar_icon_layout(volatile uint8_t *frame, int x) {
@@ -2145,38 +2189,63 @@ static void bar_icon_battery(volatile uint8_t *frame, int x) {
   car_rect(frame, x + 2, 5, x + 18, 11, BAR_GREEN);
 }
 
+// Which page of its group the current tab is (for the page dots): the home
+// and clock tabs form the main group, settings/UI settings/about the second.
+static int bar_pages(int *count) {
+  switch (smenu.menu_tab) {
+  case MENUTAB_HOME:     *count = 2; return 0;
+  case MENUTAB_CLOCK:    *count = 2; return 1;
+  case MENUTAB_SETTINGS: *count = 3; return 0;
+  case MENUTAB_UILANG:   *count = 3; return 1;
+  case MENUTAB_INFO:     *count = 3; return 2;
+  default:               *count = 0; return -1;
+  }
+}
+
 static void render_infobar(volatile uint8_t *frame) {
   static const uint8_t bands[4] = { BAR_C0, BAR_C1, BAR_C2, BAR_C3 };
   for (unsigned i = 0; i < 4; i++)
     dma_memset16(&frame[i * 4 * SCREEN_WIDTH], dup8(bands[i]), SCREEN_WIDTH * (i == 3 ? 3 : 4) / 2);
   dma_memset16(&frame[(BAR_H - 1) * SCREEN_WIDTH], dup8(BAR_LN), SCREEN_WIDTH / 2);
 
-  // Separators: dashed vertical lines.
-  static const uint8_t seps[3] = { BAR_SEP1, BAR_SEP2, BAR_SEP3 };
+  // Time and date (24h, month/day).
+  t_dec_date d;
+  timestamp2date(clock_now(), &d);
+  char tbuf[16], dbuf[16];
+  npf_snprintf(tbuf, sizeof(tbuf), "%02d:%02d", d.hour, d.min);
+  npf_snprintf(dbuf, sizeof(dbuf), "%02d/%02d", d.month, d.day);
+
+  // Lay out from the right: icons, separator, date, separator, time, separator.
+  const int sep3 = BAR_ICONS_X - 3;
+  const int sep2 = sep3 - ((int)font_width(dbuf) + 9);
+  const int sep1 = sep2 - ((int)font_width(tbuf) + 9);
+  const int seps[3] = { sep1, sep2, sep3 };
   for (unsigned i = 0; i < 3; i++)
     for (int y = 1; y < BAR_H - 2; y += 2)
       car_span(frame, y, seps[i], seps[i] + 1, BAR_LN);
+  bar_text(frame, tbuf, sep1 + 5);
+  bar_text(frame, dbuf, sep2 + 5);
 
-  // User name, clipped to its area.
+  // Page dots (small squares) just left of the time.
+  int npages, cur = bar_pages(&npages);
+  int left = sep1 - 5;
+  for (int i = npages - 1; i >= 0; i--) {
+    left -= 4;
+    car_rect(frame, left, 6, left + 4, 10, i == cur ? BAR_TX : BAR_LN);
+    left -= 2;
+  }
+
+  // User name, clipped to the room that is left.
   char tmp[USERNAME_MAX + 4];
-  unsigned n = font_width_cap(user_name, BAR_SEP1 - 8);
+  unsigned n = font_width_cap(user_name, MAX(0, left - 4 - 5));
   memcpy(tmp, user_name, n);
   tmp[n] = 0;
   bar_text(frame, tmp, 5);
 
-  // Time and date (24h, month/day).
-  t_dec_date d;
-  timestamp2date(clock_now(), &d);
-  char buf[16];
-  npf_snprintf(buf, sizeof(buf), "%02d:%02d", d.hour, d.min);
-  bar_text_center(frame, buf, (BAR_SEP1 + BAR_SEP2) / 2 + 1);
-  npf_snprintf(buf, sizeof(buf), "%02d/%02d", d.month, d.day);
-  bar_text_center(frame, buf, (BAR_SEP2 + BAR_SEP3) / 2 + 1);
-
   // Filler icons, as in the DS.
-  bar_icon_layout(frame, 185);
-  bar_icon_m(frame, 202);
-  bar_icon_battery(frame, 217);
+  bar_icon_layout(frame, BAR_ICONS_X);
+  bar_icon_m(frame, BAR_ICONS_X + 17);
+  bar_icon_battery(frame, BAR_ICONS_X + 32);
 }
 
 void render_home(volatile uint8_t *frame) {
@@ -2186,35 +2255,42 @@ void render_home(volatile uint8_t *frame) {
     home_button(frame, b);
 
   char buf[24];
-  const int tcx = (home_rects[HB_FLASH].x0 + 44 + home_rects[HB_FLASH].x1) / 2;
+  int x0, y0, x1, y1;
 
   // Flash games: games written to the cart memory (fast loading ROMs).
-  home_icon_chip(frame, home_rects[HB_FLASH].x0 + 10, home_rects[HB_FLASH].y0 + 11);
-  draw_central_text("Flash games", frame, tcx, home_rects[HB_FLASH].y0 + 4);
+  x0 = home_rects[HB_FLASH].x0; y0 = home_rects[HB_FLASH].y0; x1 = home_rects[HB_FLASH].x1; y1 = home_rects[HB_FLASH].y1;
+  home_icon_chip(frame, x0 + 8, y0 + 11);
+  home_plate(frame, x0 + 44, y0 + 4, x1 - 4, y1 - 4);
+  draw_central_text("Flash games", frame, (x0 + 44 + x1 - 4) / 2, y0 + 6);
   #ifdef SUPPORT_NORGAMES
   npf_snprintf(buf, sizeof(buf), "%u games", (unsigned)smenu.fbrowser.maxentries);
   #else
-  npf_snprintf(buf, sizeof(buf), "Not on this cart");
+  npf_snprintf(buf, sizeof(buf), "Not available");
   #endif
-  draw_central_text(buf, frame, tcx, home_rects[HB_FLASH].y0 + 22);
+  draw_central_text(buf, frame, (x0 + 44 + x1 - 4) / 2, y0 + 22);
 
-  // Recent games and hardware test.
-  static const char *const names[2][2] = { { "Recent", "games" }, { "Hardware", "test" } };
-  for (int b = HB_RECENT; b <= HB_HWTEST; b++) {
-    const int x0 = home_rects[b].x0, y0 = home_rects[b].y0;
-    (b == HB_RECENT ? home_icon_recent : home_icon_gear)(frame, x0 + 6, y0 + 6);
-    const int cx = (x0 + 42 + home_rects[b].x1) / 2;
-    draw_central_text(names[b - HB_RECENT][0], frame, cx, y0 + 4);
-    draw_central_text(names[b - HB_RECENT][1], frame, cx, y0 + 22);
-  }
+  // Recent games (two tiles wide): icon and a two line label.
+  x0 = home_rects[HB_RECENT].x0; y0 = home_rects[HB_RECENT].y0; x1 = home_rects[HB_RECENT].x1; y1 = home_rects[HB_RECENT].y1;
+  home_icon_recent(frame, x0 + 5, y0 + 6);
+  home_plate(frame, x0 + 42, y0 + 4, x1 - 4, y1 - 4);
+  draw_central_text("Recent", frame, (x0 + 42 + x1 - 4) / 2, y0 + 6);
+  draw_central_text("games", frame, (x0 + 42 + x1 - 4) / 2, y0 + 22);
 
-  // Carousel.
-  home_icon_cart_small(frame, home_rects[HB_CAROUSEL].x0 + 10, home_rects[HB_CAROUSEL].y0 + 3);
-  draw_central_text("Game carousel", frame, tcx, home_rects[HB_CAROUSEL].y0 + 3);
+  // Hardware test (one tile wide): icon with the label below.
+  x0 = home_rects[HB_HWTEST].x0; y0 = home_rects[HB_HWTEST].y0; x1 = home_rects[HB_HWTEST].x1; y1 = home_rects[HB_HWTEST].y1;
+  home_icon_gear(frame, (x0 + x1) / 2 - 12, y0 + 3, 24);
+  home_plate(frame, x0 + 2, y1 - 18, x1 - 2, y1 - 2);
+  draw_central_text("HW test", frame, (x0 + x1) / 2, y1 - 18);
 
-  // Bottom row: theme, UI settings, settings, about and time.
+  // Carousel (three tiles wide).
+  x0 = home_rects[HB_CAROUSEL].x0; y0 = home_rects[HB_CAROUSEL].y0; x1 = home_rects[HB_CAROUSEL].x1; y1 = home_rects[HB_CAROUSEL].y1;
+  home_icon_cart_small(frame, x0 + 8, y0 + 3);
+  home_plate(frame, x0 + 38, y0 + 3, x1 - 4, y1 - 3);
+  draw_central_text("Game carousel", frame, (x0 + 38 + x1 - 4) / 2, y0 + 3);
+
+  // Bottom row: theme, settings and time.
   static void (*const icons[HB_COUNT - HB_THEME])(volatile uint8_t*, int, int) = {
-    home_icon_theme, home_icon_uiset, home_icon_settings, home_icon_about, home_icon_time,
+    home_icon_theme, home_icon_settings, home_icon_time,
   };
   for (int b = HB_THEME; b <= HB_TIME; b++)
     icons[b - HB_THEME](frame, (home_rects[b].x0 + home_rects[b].x1) / 2, 148);
@@ -2846,11 +2922,13 @@ void reload_theme(unsigned thnum) {
   const uint16_t acc = RGB2GBA(rgb);
   const bool light = (((rgb >> 16) & 0xFF) * 3 + ((rgb >> 8) & 0xFF) * 6 + (rgb & 0xFF)) / 10 > 150;
   MEM_PALETTE[ACC_COLOR] = acc;
-  MEM_PALETTE[BAR_C0] = mix15(acc, 0x7FFF, 100);
-  MEM_PALETTE[BAR_C1] = mix15(acc, 0x7FFF, 45);
-  MEM_PALETTE[BAR_C2] = acc;
-  MEM_PALETTE[BAR_C3] = mix15(acc, 0, 40);
-  MEM_PALETTE[BAR_LN] = mix15(acc, 0, 130);
+  const bool dark = thnum == THEME_DARK;
+  const int dk = dark ? 150 : 0;       // The dark theme has a darker bar, black grid and darker buttons
+  MEM_PALETTE[BAR_C0] = mix15(mix15(acc, 0x7FFF, 100), 0, dk);
+  MEM_PALETTE[BAR_C1] = mix15(mix15(acc, 0x7FFF, 45), 0, dk);
+  MEM_PALETTE[BAR_C2] = mix15(acc, 0, dk);
+  MEM_PALETTE[BAR_C3] = mix15(mix15(acc, 0, 40), 0, dk);
+  MEM_PALETTE[BAR_LN] = mix15(mix15(acc, 0, 130), 0, dk);
   MEM_PALETTE[BAR_TX] = light ? RGB2GBA(0x101018) : 0x7FFF;
   MEM_PALETTE[BAR_GREEN] = RGB2GBA(0x30d040);
   MEM_PALETTE[BAR_ORANGE] = RGB2GBA(0xf08020);
@@ -2869,7 +2947,18 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xa0a0a0);
   // Scanline rows are a bit closer to the text color than the others.
   MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
-  MEM_PALETTE[SL_GRID] = mix15(themes[thnum].hi_color, themes[thnum].ft_color, 14);
+  const uint16_t grid = dark ? 0 : themes[thnum].hi_color;
+  MEM_PALETTE[GRID_COLOR] = grid;
+  MEM_PALETTE[SL_GRID] = mix15(grid, themes[thnum].ft_color, 14);
+  MEM_PALETTE[BTN_EDGE] = dark ? themes[thnum].fg_color : themes[thnum].ft_color;
+  // Button gradient: lighter at the top (darker in the dark theme), many shades.
+  {
+    const uint16_t hi = themes[thnum].hi_color;
+    const uint16_t top = dark ? mix15(hi, 0, 120) : mix15(hi, 0x7FFF, 150);
+    const uint16_t bot = dark ? mix15(hi, 0, 235) : mix15(hi, themes[thnum].ft_color, 24);
+    for (int i = 0; i < GRAD_N; i++)
+      MEM_PALETTE[GRAD_BASE + i] = mix15(top, bot, i * 256 / (GRAD_N - 1));
+  }
   // In-game menu palette
   MEM_PALETTE[IGM_PAL_FG] = themes[thnum].fg_color;
   MEM_PALETTE[IGM_PAL_BG] = themes[thnum].bg_color;
@@ -2900,6 +2989,31 @@ static const struct {
 // The recent ROMs tab is only available when enabled and not empty.
 static bool recent_available(void) {
   return recent_menu && smenu.recent.maxentries;
+}
+
+// Clock tick: a very short noise burst on the PSG every second, only while
+// the clock tab is open. The sound hardware is switched off otherwise.
+static void clock_tick_update(void) {
+  static bool snd_on;
+  static uint32_t last_ts;
+  if (smenu.menu_tab == MENUTAB_CLOCK) {
+    const uint32_t ts = clock_now();
+    if (!snd_on) {
+      SNDCNT_X = 0x80;               // Master enable
+      SNDCNT_L = 0x8855;             // Noise channel to both sides, volume 5/7
+      SNDCNT_H = 2;                  // PSG at 100%
+      snd_on = true;
+      last_ts = ts;
+    }
+    if (ts != last_ts) {
+      last_ts = ts;
+      SND4_L = (10 << 12) | (1 << 8) | 58;                      // Volume 10, fast decay, ~23ms length
+      SND4_H = 0x8000 | 0x4000 | ((ts & 1) ? (3 << 4) : (2 << 4)) | 1;   // Tick and tock pitches
+    }
+  } else if (snd_on) {
+    SNDCNT_X = 0;
+    snd_on = false;
+  }
 }
 
 void menu_render(unsigned fcnt) {
@@ -2940,6 +3054,8 @@ void menu_render(unsigned fcnt) {
       smenu.anim_state += fcnt * animspd_lut[anim_speed];
     }
   }
+
+  clock_tick_update();
 
   // Render popup window. Use windowing to ensure the pop up is not covered by OBJs.
   if (spop.alert_msg) {
@@ -3820,14 +3936,8 @@ static void home_activate(int b) {
     reload_theme(menu_theme);
     save_ui_settings();
     break;
-  case HB_UISET:
-    smenu.menu_tab = MENUTAB_UILANG;
-    break;
   case HB_SETTINGS:
     smenu.menu_tab = MENUTAB_SETTINGS;
-    break;
-  case HB_ABOUT:
-    smenu.menu_tab = MENUTAB_INFO;
     break;
   case HB_TIME:
     clock_open_setter();
@@ -4239,9 +4349,22 @@ void menu_keypress(unsigned newkeys) {
     const unsigned tab0 = smenu.menu_tab;
     const bool editing = tab0 == MENUTAB_UILANG && smenu.uiset.editing;
 
-    // Shoulder buttons toggle the clock tab, going back to the previous tab.
+    // The settings tabs (settings, UI settings, about) are switched with the
+    // shoulder buttons; anywhere else they toggle the clock tab, going back to
+    // the previous tab.
+    static const uint8_t setgrp[3] = { MENUTAB_SETTINGS, MENUTAB_UILANG, MENUTAB_INFO };
+    int gi = -1;
+    for (unsigned i = 0; i < 3; i++)
+      if (tab0 == setgrp[i])
+        gi = i;
     if (!editing && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
-      if (tab0 == MENUTAB_CLOCK)
+      if (gi >= 0) {
+        if ((newkeys & KEY_BUTTL) && gi > 0)
+          smenu.menu_tab = setgrp[gi - 1];
+        else if ((newkeys & KEY_BUTTR) && gi < 2)
+          smenu.menu_tab = setgrp[gi + 1];
+      }
+      else if (tab0 == MENUTAB_CLOCK)
         smenu.menu_tab = smenu.prev_tab;
       else {
         smenu.prev_tab = tab0;

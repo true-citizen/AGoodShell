@@ -62,7 +62,7 @@ extern uint8_t recent_menu;
 extern uint8_t hide_hidden;
 extern uint8_t anim_speed;
 extern uint8_t accent_color;          // Index of the accent color (DS favorite colors)
-#define USERNAME_MAX 8
+#define USERNAME_MAX 10
 extern char user_name[USERNAME_MAX + 1];  // Name shown in the info bar
 extern uint32_t clock_ts_default;   // Last time set in the clock tab (secs since 2000)
 
