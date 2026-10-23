@@ -9,7 +9,7 @@ A fork of SuperFW firmware for Supercard GBA flash carts (and derivatives/clones
 This project aims to bring DS-like interface to Gameboy Advance gaming console.
 
 As this is still a recognizable fork of SuperFW under the hood, 
-and its website and documentation are at https://superfw.davidgf.net/
+its website and documentation are at https://superfw.davidgf.net/
 
 <b>Warning: I have limited testing opportunities(only SuperChis and DS Phat, 
 but not original SuperCard nor ordinary GBA), so please report all issues/regresses
