@@ -3,18 +3,18 @@ AGoodShell++
 <img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/9126b365-0606-4bbb-95a9-eb6bec7b0b3c" />
 <img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/43cc5534-1b53-4c35-878a-40c3fba47caf" />
 
-A fork of an alternative firmware for Supercard GBA flash carts (and derivatives/clones)
+A fork of an SuperFW firmware for Supercard GBA flash carts (and derivatives/clones)
 
-This project aims to provide a more modern and better firmware for Supercard
-flash carts (which are still widely used and very cheaply available). The goal
-is to bring DS-like interface to Gameboy Advance gaming console.
+This project aims to bring DS-like interface to Gameboy Advance gaming console.
 
-This is fork of SuperFW and its website and documentation are at https://superfw.davidgf.net/
+As this is still a recognizeable fork of SuperFW under the hood, 
+and its website and documentation are at https://superfw.davidgf.net/
 
-Warning: I have limited testing opportunities(only SuperChis and DS Phat), so please report all issues
+Warning: I have limited testing opportunities(only SuperChis and DS Phat, 
+but not original SuperCard nor true GBA), so please report all issues/regresses
 you found that are not present on official SuperFW on Issues tab of this fork. Its preferable that
 besides of GBA you also have Nintendo DS/DS Lite so in case if your flashcart gets bricked, 
-you could reflash original SuperFW back using Nintendo DS
+you could reflash original SuperFW back using Nintendo DS. 
 
 Installation
 ------------
@@ -159,11 +159,11 @@ build-time) were re-implemented in C++ using the original sources as reference
 and an LLM (they are under zlib and public domain respecitvely). Some
 linkerscript/crt0 code was adapted from AntonioND's work under CC0.
 This specific forks also employs some elements from TwiLightMenu++(GPL-3.0),
-Galmuri font by quiple(OFL-1.1)
+Galmuri font by quiple(OFL-1.1).
 
 Special credits
 --------
- - SuperFW developers
- - Few buckets of water to power LLM servers
+ - SuperFW and TwilightMenu++ developers
+ - Few buckets of water evaporated to cool LLM servers
  - Piece of 99% chocolate
  - Code of millions(or billions?) programmers and coders.
