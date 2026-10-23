@@ -4,18 +4,18 @@ AGoodShell++
 <img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/9126b365-0606-4bbb-95a9-eb6bec7b0b3c" />
 <img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/43cc5534-1b53-4c35-878a-40c3fba47caf" />
 
-A fork of an SuperFW firmware for Supercard GBA flash carts (and derivatives/clones)
+A fork of SuperFW firmware for Supercard GBA flash carts (and derivatives/clones)
 
 This project aims to bring DS-like interface to Gameboy Advance gaming console.
 
-As this is still a recognizeable fork of SuperFW under the hood, 
+As this is still a recognizable fork of SuperFW under the hood, 
 and its website and documentation are at https://superfw.davidgf.net/
 
-Warning: I have limited testing opportunities(only SuperChis and DS Phat, 
-but not original SuperCard nor true GBA), so please report all issues/regresses
+<b>Warning: I have limited testing opportunities(only SuperChis and DS Phat, 
+but not original SuperCard nor ordinary GBA), so please report all issues/regresses
 you found that are not present on official SuperFW on Issues tab of this fork. Its preferable that
 besides of GBA you also have Nintendo DS/DS Lite so in case if your flashcart gets bricked, 
-you could reflash original SuperFW back using Nintendo DS. 
+you could reflash original SuperFW back using Nintendo DS.</b>
 
 Installation
 ------------
@@ -164,7 +164,7 @@ Galmuri font by quiple(OFL-1.1).
 
 Special credits
 --------
- - SuperFW and TwilightMenu++ developers
+ - SuperFW and TWiLightMenu++ developers
  - Few buckets of water evaporated to cool LLM servers
  - Piece of 99% chocolate
  - Code of millions(or billions?) programmers and coders.
