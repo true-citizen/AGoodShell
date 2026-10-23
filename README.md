@@ -1,7 +1,7 @@
 AGoodShell++
 =======
-<img width="720" height="480" alt="image" src="https://github.com/user-attachments/assets/9126b365-0606-4bbb-95a9-eb6bec7b0b3c" />
-<img width="720" height="480" alt="image" src="https://github.com/user-attachments/assets/43cc5534-1b53-4c35-878a-40c3fba47caf" />
+<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/9126b365-0606-4bbb-95a9-eb6bec7b0b3c" />
+<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/43cc5534-1b53-4c35-878a-40c3fba47caf" />
 
 A fork of an alternative firmware for Supercard GBA flash carts (and derivatives/clones)
 
