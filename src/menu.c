@@ -82,8 +82,8 @@ enum {
 };
 
 #define BROWSER_ROWS                 8
-#define RECENT_ROWS                  9
-#define NORGAMES_ROWS                8
+#define RECENT_ROWS                  10
+#define NORGAMES_ROWS                9
 
 // First entries reserved for the logo palette.
 #define FG_COLOR         16
@@ -191,20 +191,21 @@ enum {
 };
 
 // Carousel tab layout (DSi menu style), in pixels.
-#define CAR_BUB_Y        18      // Speech bubble with the name of the entry
-#define CAR_BUB_H        46
-#define CAR_SLOT_Y       70      // Blue slot of the selected entry
+#define CAR_BUB_Y        24      // Speech bubble with the name of the entry (the tab is
+#define CAR_BUB_H        46      // drawn 16 rows up, so these are screen rows + 16)
+#define CAR_SLOT_Y       76      // Blue slot of the selected entry
 #define CAR_SLOT_W       64
-#define CAR_SLOT_H       70
-#define CAR_PLATE_Y      76      // Top of the white plates
+#define CAR_SLOT_H       72
+#define CAR_PLATE_Y      82      // Top of the white plates
 #define CAR_PITCH        56      // Distance between the centers of two plates
 #define CAR_BOX_W        48      // Plate size
 #define CAR_BOX_H        48
 #define CAR_ICON_SZ      32      // File icon size
 #define CAR_ICON_Y       6       // Icon offset from the top of the plate
-#define CAR_BAR_Y        142     // Scroll bar: arrow buttons, track, thumb
-#define CAR_TRK_X0       22
-#define CAR_TRK_X1       218
+#define CAR_BAR_Y        160     // Scroll bar along the bottom: arrow buttons, track, thumb
+#define CAR_BAR_H        16
+#define CAR_TRK_X0       16
+#define CAR_TRK_X1       224
 #define CAR_THUMB        14
 #define CAR_PAGE          4      // Entries skipped by UP/DOWN
 #define CAR_SPEED_DIV     4      // Easing: move 1/4 of the remaining distance
@@ -1279,12 +1280,16 @@ static void flashbrowser_reload() {
   #endif
 }
 
+// Tabs without the info bar are drawn shifted up (see menu_render): sprites
+// have to follow that shift.
+static int ui_yshift;
+
 static inline void render_icon(unsigned x, unsigned y, unsigned iconn) {
-  fobjs[objnum++] = (t_oamobj){x, y, 8*iconn };
+  fobjs[objnum++] = (t_oamobj){x, (y - ui_yshift) & 0xFF, 8*iconn };
 }
 
 static inline void render_icon_trans(unsigned x, unsigned y, unsigned iconn) {
-  fobjs[objnum++] = (t_oamobj){x, y | 0x0400, 8*iconn };
+  fobjs[objnum++] = (t_oamobj){x, ((y - ui_yshift) & 0xFF) | 0x0400, 8*iconn };
 }
 
 // Guess the file type based on the file name.
@@ -1458,8 +1463,8 @@ void render_recent(volatile uint8_t *frame) {
 
 #ifdef SUPPORT_NORGAMES
 void render_flashbrowser(volatile uint8_t *frame) {
-  // Render bar below to show block info
-  dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
+  // Render bar below to show block info (the tab is drawn 16 rows up, no info bar)
+  dma_memset16(&frame[240*160], dup8(FG_COLOR), 240*16/2);
 
   // Render the list from memory.
   if (!smenu.fbrowser.maxentries)
@@ -1492,12 +1497,12 @@ void render_flashbrowser(volatile uint8_t *frame) {
 
   char tmp[32], tmp1[32], tmp2[32];
   npf_snprintf(tmp, sizeof(tmp), "%u/%d", smenu.fbrowser.selector + 1, smenu.fbrowser.maxentries);
-  draw_rightj_text(tmp, frame, SCREEN_WIDTH - 1, 1);
+  draw_rightj_text(tmp, frame, SCREEN_WIDTH - 1, 160);
 
   human_size(tmp1, sizeof(tmp1), smenu.fbrowser.usedblks * NOR_BLOCK_SIZE);
   human_size(tmp2, sizeof(tmp2), NOR_GAMEBLOCK_COUNT * NOR_BLOCK_SIZE);
   npf_snprintf(tmp, sizeof(tmp), "Flash usage: %s/%s", tmp1, tmp2);
-  draw_text_ovf(tmp, frame, 8, 144, SCREEN_WIDTH - 16);
+  draw_text_ovf(tmp, frame, 8, 160, SCREEN_WIDTH - 56);
 }
 #endif
 
@@ -1541,10 +1546,11 @@ static void car_span(volatile uint8_t *frame, int y, int x0, int x1, uint8_t col
 
 // Fills the rectangle [x0, x1) x [y0, y1), clipped to the screen.
 static void car_rect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, uint8_t color) {
-  if (y0 < 0)
-    y0 = 0;
-  if (y1 > SCREEN_HEIGHT)
-    y1 = SCREEN_HEIGHT;
+  // Rows are relative to the (possibly shifted up, see ui_yshift) frame pointer.
+  if (y0 < ui_yshift)
+    y0 = ui_yshift;
+  if (y1 > SCREEN_HEIGHT + ui_yshift)
+    y1 = SCREEN_HEIGHT + ui_yshift;
   for (int y = y0; y < y1; y++)
     car_span(frame, y, x0, x1, color);
 }
@@ -1653,14 +1659,14 @@ static void car_plate(volatile uint8_t *frame, int cx, int y) {
   ds_rrect(frame, x0 + 2, y + CAR_BOX_H - 4, x0 + CAR_BOX_W - 2, y + CAR_BOX_H - 1, 1, PL_SHADE, 1);
 }
 
-// Arrow button of the scroll bar. Dimmed (flat gray) when it can't move.
+// Arrow button of the scroll bar (square, 16x16). Dimmed (flat gray) when it can't move.
 static void car_arrow(volatile uint8_t *frame, int x0, bool left, bool enabled) {
   const int y0 = CAR_BAR_Y;
-  ds_rrect(frame, x0, y0, x0 + 16, y0 + 16, 2, enabled ? BL_EDGE : PL_EDGE, 1);
+  ds_rrect(frame, x0, y0, x0 + 16, y0 + CAR_BAR_H, 0, enabled ? BL_EDGE : PL_EDGE, 1);
   if (enabled)
-    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + 15, 2, BL_BASE, 6);
+    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + CAR_BAR_H - 1, 0, BL_BASE, 6);
   else
-    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + 15, 2, PL_SHADE, 1);
+    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + CAR_BAR_H - 1, 0, PL_SHADE, 1);
   const int tip = left ? x0 + 4 : x0 + 12, base = left ? x0 + 10 : x0 + 6;
   for (int dy = -4; dy <= 4; dy++) {
     const int w = dy < 0 ? -dy : dy;
@@ -1676,13 +1682,16 @@ void render_carousel(volatile uint8_t *frame) {
   const int cx = SCREEN_WIDTH / 2;
   car_ease();
 
-  // Speech bubble with a pointer to the selected plate.
+  // Speech bubble with a pointer to the selected plate: flat white face, double
+  // frame (darker gray outside, lighter gray inside).
   ds_rrect(frame, 8, CAR_BUB_Y, SCREEN_WIDTH - 8, CAR_BUB_Y + CAR_BUB_H, 4, PL_EDGE, 1);
-  ds_rrect(frame, 9, CAR_BUB_Y + 1, SCREEN_WIDTH - 9, CAR_BUB_Y + CAR_BUB_H - 1, 3, PL_BASE, 6);
+  ds_rrect(frame, 9, CAR_BUB_Y + 1, SCREEN_WIDTH - 9, CAR_BUB_Y + CAR_BUB_H - 1, 3, PL_BASE + 4, 1);
+  ds_rrect(frame, 10, CAR_BUB_Y + 2, SCREEN_WIDTH - 10, CAR_BUB_Y + CAR_BUB_H - 2, 2, PL_BASE, 1);
   for (int r = -1; r < 7; r++) {
     const int w = 7 - r, y = CAR_BUB_Y + CAR_BUB_H + r;
     car_span(frame, y, cx - w, cx + w + 1, PL_EDGE);
-    car_span(frame, y, cx - w + 2, cx + w - 1, PL_BASE + 5);
+    car_span(frame, y, cx - w + 1, cx + w, PL_BASE + 4);
+    car_span(frame, y, cx - w + 2, cx + w - 1, PL_BASE);
   }
 
   if (!n) {
@@ -1723,12 +1732,13 @@ void render_carousel(volatile uint8_t *frame) {
                 cx, CAR_PLATE_Y + CAR_BOX_H - 2, BAR_WHITE);
   }
 
-  // Scroll bar: arrow buttons, a track of dots and the thumb.
+  // Scroll bar: arrow buttons, a track of dots and the thumb, all square and
+  // touching each other along the bottom of the screen.
   const int sel = smenu.browser.selector;
-  car_arrow(frame, 2, true, n && sel > 0);
-  car_arrow(frame, SCREEN_WIDTH - 18, false, n && sel < n - 1);
-  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y + 1, CAR_TRK_X1, CAR_BAR_Y + 15, 2, PL_EDGE, 1);
-  ds_rrect(frame, CAR_TRK_X0 + 1, CAR_BAR_Y + 2, CAR_TRK_X1 - 1, CAR_BAR_Y + 14, 2, PL_BASE + 2, 4);
+  car_arrow(frame, 0, true, n && sel > 0);
+  car_arrow(frame, SCREEN_WIDTH - 16, false, n && sel < n - 1);
+  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H, 0, PL_EDGE, 1);
+  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y + 1, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H - 1, 0, PL_BASE + 2, 4);
   const int span = CAR_TRK_X1 - CAR_TRK_X0 - 2 - CAR_THUMB;
   int thumb = CAR_TRK_X0 + 1;
   if (n > 1) {
@@ -1741,9 +1751,9 @@ void render_carousel(volatile uint8_t *frame) {
     else
       car_rect(frame, x + 1, CAR_BAR_Y + 7, x + 3, CAR_BAR_Y + 9, PL_EDGE);
   }
-  ds_rrect(frame, thumb, CAR_BAR_Y, thumb + CAR_THUMB, CAR_BAR_Y + CAR_THUMB + 2, 2, BL_EDGE, 1);
-  ds_rrect(frame, thumb + 1, CAR_BAR_Y + 1, thumb + CAR_THUMB - 1, CAR_BAR_Y + CAR_THUMB + 1, 2, PL_BASE, 6);
-  car_rect(frame, thumb + CAR_THUMB / 2 - 2, CAR_BAR_Y + CAR_THUMB / 2 - 1, thumb + CAR_THUMB / 2 + 2, CAR_BAR_Y + CAR_THUMB / 2 + 3, BL_EDGE);
+  ds_rrect(frame, thumb, CAR_BAR_Y, thumb + CAR_THUMB, CAR_BAR_Y + CAR_BAR_H, 0, BL_EDGE, 1);
+  ds_rrect(frame, thumb + 1, CAR_BAR_Y + 1, thumb + CAR_THUMB - 1, CAR_BAR_Y + CAR_BAR_H - 1, 0, PL_BASE, 6);
+  car_rect(frame, thumb + CAR_THUMB / 2 - 2, CAR_BAR_Y + CAR_BAR_H / 2 - 2, thumb + CAR_THUMB / 2 + 2, CAR_BAR_Y + CAR_BAR_H / 2 + 2, BL_EDGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -2246,14 +2256,11 @@ static void bar_icon_battery(volatile uint8_t *frame, int x) {
 }
 
 // Which page of its group the current tab is (for the page dots): the home
-// and clock tabs form the main group, settings/UI settings/about the second.
+// and clock tabs (the only ones with the info bar) form the group.
 static int bar_pages(int *count) {
   switch (smenu.menu_tab) {
   case MENUTAB_HOME:     *count = 2; return 0;
   case MENUTAB_CLOCK:    *count = 2; return 1;
-  case MENUTAB_SETTINGS: *count = 3; return 0;
-  case MENUTAB_UILANG:   *count = 3; return 1;
-  case MENUTAB_INFO:     *count = 3; return 2;
   default:               *count = 0; return -1;
   }
 }
@@ -2807,24 +2814,24 @@ void render_settings(volatile uint8_t *frame) {
   }
 
   // Render bar below for help messge
-  dma_memset16(&frame[240*140], dup8(FG_COLOR), 240*20/2);
+  dma_memset16(&frame[240*148], dup8(FG_COLOR), 240*20/2);
 
   if (smenu.set.selector == SettSaveLoc) {
     if (save_path_default == SaveRomName)
-      draw_text_ovf_rotate(msgs[lang_id][MSG_SAVE_TYPE_NR], frame, 4, SCREEN_HEIGHT - 18, 232, &smenu.anim_state);
+      draw_text_ovf_rotate(msgs[lang_id][MSG_SAVE_TYPE_NR], frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
     else {
       npf_snprintf(tmp, sizeof(tmp), msgs[lang_id][MSG_SAVE_TYPE_PT], save_paths[save_path_default]);
-      draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 18, 232, &smenu.anim_state);
+      draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
     }
   }
   else if (smenu.set.selector == SettStateLoc) {
     npf_snprintf(tmp, sizeof(tmp), msgs[lang_id][MSG_STATE_TYPE_PT], savestates_paths[state_path_default]);
-    draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 18, 232, &smenu.anim_state);
+    draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
   }
   #ifdef SUPPORT_NORGAMES
   else if (smenu.set.selector == SettSaveLocNOR) {
     npf_snprintf(tmp, sizeof(tmp), msgs[lang_id][MSG_SAVE_TYPE_PTX], save_paths[save_path_nor_default]);
-    draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 18, 232, &smenu.anim_state);
+    draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
   }
   #endif
   else {
@@ -2840,7 +2847,7 @@ void render_settings(volatile uint8_t *frame) {
                         smenu.set.selector == SettVerifyNOR ? MSG_VERNOR_I :
                         #endif
                         MSG_EMPTY;
-    draw_text_ovf_rotate(msgs[lang_id][help_msg], frame, 4, SCREEN_HEIGHT - 18, 232, &smenu.anim_state);
+    draw_text_ovf_rotate(msgs[lang_id][help_msg], frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
   }
 
   if (smenu.set.selector != SettSave)
@@ -3110,11 +3117,24 @@ void menu_render(unsigned fcnt) {
   render_fcnt = fcnt;
   volatile uint8_t *frame = &MEM_VRAM_U8[0xA000*framen];
 
-  // Render the information bar on top (rows 0..15)
-  render_infobar(frame);
-
-  // Render the main area
-  dma_memset16(&frame[16*SCREEN_WIDTH], dup8(BG_COLOR), SCREEN_WIDTH*(SCREEN_HEIGHT-16) / 2);
+  // Like in TWiLight Menu++ only the home and clock tabs have the information
+  // bar; the others use the whole screen. Their content is laid out for a 16 row
+  // bar, so it is drawn shifted up (16 rows for the lists and the carousel, which
+  // use all the room, 8 for the others, which end up centered).
+  const bool bar = smenu.menu_tab == MENUTAB_HOME || smenu.menu_tab == MENUTAB_CLOCK;
+  int shift = 0;
+  if (!bar)
+    shift = (smenu.menu_tab == MENUTAB_RECENT || smenu.menu_tab == MENUTAB_ROMBROWSE
+             #ifdef SUPPORT_NORGAMES
+             || smenu.menu_tab == MENUTAB_NORBROWSE
+             #endif
+            ) ? 16 : 8;
+  if (bar) {
+    render_infobar(frame);
+    dma_memset16(&frame[16*SCREEN_WIDTH], dup8(BG_COLOR), SCREEN_WIDTH*(SCREEN_HEIGHT-16) / 2);
+  } else {
+    dma_memset16(&frame[0], dup8(BG_COLOR), SCREEN_WIDTH*SCREEN_HEIGHT / 2);
+  }
 
   if (spop.qpop.message)
     render_popupq(frame, fcnt);
@@ -3138,7 +3158,9 @@ void menu_render(unsigned fcnt) {
         render_tools,
         render_info,
       };
-      renderfns[smenu.menu_tab](frame);
+      ui_yshift = shift;
+      renderfns[smenu.menu_tab](frame - shift * SCREEN_WIDTH);
+      ui_yshift = 0;
       smenu.anim_state += fcnt * animspd_lut[anim_speed];
     }
   }
