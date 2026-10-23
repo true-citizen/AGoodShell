@@ -1,6 +1,6 @@
 AGoodShell++
-<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/929a9070-8863-4098-970c-af7577b5ebfb" />
 =======
+<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/3955d53a-bc4f-4798-a688-cd228da6346e" />
 <img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/9126b365-0606-4bbb-95a9-eb6bec7b0b3c" />
 <img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/43cc5534-1b53-4c35-878a-40c3fba47caf" />
 
