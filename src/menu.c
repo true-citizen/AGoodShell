@@ -54,7 +54,6 @@ enum {
   #ifdef SUPPORT_NORGAMES
   MENUTAB_NORBROWSE,     // Browses Flash games and launches them.
   #endif
-  MENUTAB_DSSCREEN,      // Same ROM list, laid out like a DS bottom screen.
   MENUTAB_CLOCK,         // Clock and calendar (DS top screen).
   MENUTAB_SETTINGS,      // General settings / defaults
   MENUTAB_UILANG,        // UI / Language settings
@@ -121,6 +120,12 @@ enum {
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
 #define GRAD_N           32
+#define PL_BASE          120     // Carousel (DSi style) colors: plate gradient, edge, lip,
+#define PL_EDGE          126     // blue slot gradient, edge, and the dots of the scroll bar
+#define PL_SHADE         127
+#define BL_BASE          128
+#define BL_EDGE          134
+#define GR_DOT           135
 #define HOME_ICON_BASE   95      // Palette of the TWiLight Menu++ corner icons (bitmap index i -> 95 + i)
 
 // Sound registers (PSG noise channel), used for the clock tick.
@@ -185,25 +190,24 @@ enum {
   ToolsMAX,
 };
 
-// DS-style views (experimental). Layout constants, in pixels.
-// Carousel tab:
-#define CAR_PITCH        64      // Distance between the centers of two boxes
-#define CAR_BOX_W        56      // Box size
-#define CAR_BOX_H        56
-#define CAR_BOX_Y        26      // Top of the boxes (below the tab bar)
+// Carousel tab layout (DSi menu style), in pixels.
+#define CAR_BUB_Y        18      // Speech bubble with the name of the entry
+#define CAR_BUB_H        46
+#define CAR_SLOT_Y       70      // Blue slot of the selected entry
+#define CAR_SLOT_W       64
+#define CAR_SLOT_H       70
+#define CAR_PLATE_Y      76      // Top of the white plates
+#define CAR_PITCH        56      // Distance between the centers of two plates
+#define CAR_BOX_W        48      // Plate size
+#define CAR_BOX_H        48
 #define CAR_ICON_SZ      32      // File icon size
-#define CAR_ICON_Y       10      // Icon offset from the top of the box
-#define CAR_FRAME_PAD     4      // Selection frame padding around a box
+#define CAR_ICON_Y       6       // Icon offset from the top of the plate
+#define CAR_BAR_Y        142     // Scroll bar: arrow buttons, track, thumb
+#define CAR_TRK_X0       22
+#define CAR_TRK_X1       218
+#define CAR_THUMB        14
 #define CAR_PAGE          4      // Entries skipped by UP/DOWN
 #define CAR_SPEED_DIV     4      // Easing: move 1/4 of the remaining distance
-// DS bottom screen tab:
-#define DSS_PITCH        44      // Distance between the centers of two boxes
-#define DSS_BOX          36      // Size of a box away from the center
-#define DSS_LIFT         12      // Extra size of the box in the center
-#define DSS_ICON         24      // Stub icon size away from the center
-#define DSS_SHELF_Y     100      // Boxes rest on the shelf, starting here
-#define DSS_TITLE_Y     114      // Title window and arrow buttons
-#define DSS_TITLE_H      24
 // Clock tab:
 #define CLK_FACE_X       8       // Analog clock face: 6x6 tiles of 16x16, centered
 #define CLK_FACE_Y       40
@@ -1498,15 +1502,13 @@ void render_flashbrowser(volatile uint8_t *frame) {
 #endif
 
 // ---------------------------------------------------------------------------
-// DS-style views (experimental)
+// DS-style views
 //
-// The ROM browser tab is a horizontally scrolling carousel with one box per
+// The ROM browser tab is a horizontally scrolling carousel with one plate per
 // entry of the current directory (the selection lives in smenu.browser, so the
-// file manager pop up, hiding files, etc. keep working). Two more tabs show
-// other parts of a DS UI: a bottom-screen layout (shelf, raised box, title
-// window) over the same list, and a top-screen clock with a month calendar.
-// Everything is drawn with plain shapes and text, no textures: every icon is
-// a black rectangle for now.
+// file manager pop up, hiding files, etc. keep working). The other DS-style
+// view is the top-screen clock with a month calendar. Everything is drawn with
+// plain shapes and text (no bitmaps, to save memory): the icons are outlines.
 // ---------------------------------------------------------------------------
 
 static unsigned render_fcnt;     // Frames elapsed since the previous render
@@ -1571,21 +1573,6 @@ static int car_xof(int i, int pitch) {
   return SCREEN_WIDTH / 2 + ((((i << 8) - car_pos) * pitch) >> 8);
 }
 
-// Bottom bar with the current path and the entry counter (top right corner),
-// shared by the views that browse the file list.
-static void car_chrome(volatile uint8_t *frame) {
-  const int n = smenu.browser.dispentries;
-  dma_memset16(&frame[240*144], dup8(FG_COLOR), 240*16/2);
-  draw_text_leftovf(smenu.browser.cpath, frame, 8, 144, SCREEN_WIDTH - 8);
-
-  char selinfo[16];
-  npf_snprintf(selinfo, sizeof(selinfo), "%d/%d", n ? smenu.browser.selector + 1 : 0, n);
-  draw_rightj_text(selinfo, frame, SCREEN_WIDTH - 1, 1);
-
-  if (!n)
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 8);
-}
-
 // Icons of the file lists, drawn with plain shapes at any size: a folder, a
 // generic file and a game (any ROM the menu can launch).
 enum { ICON_KIND_FOLDER, ICON_KIND_FILE, ICON_KIND_GAME };
@@ -1633,108 +1620,130 @@ static void car_icon(volatile uint8_t *frame, int cx, int y, int sz, unsigned ki
   }
 }
 
-// Carousel: boxes in a row, a fixed selection frame in the middle.
-void render_carousel(volatile uint8_t *frame) {
-  car_chrome(frame);
-  const int n = smenu.browser.dispentries;
-  if (!n)
-    return;
-  const int cx = SCREEN_WIDTH / 2;
-  car_ease();
+// ---------------------------------------------------------------------------
+// Carousel, in the style of the DSi menu (colors of the DSi theme of TWiLight
+// Menu++): a speech bubble with the name of the selected entry, a row of white
+// plates with the entry icons that slides under a fixed blue slot holding the
+// selected one (labeled START), and a scroll bar with arrow buttons, a dot
+// track and a thumb at the bottom. Everything is drawn with spans, no textures.
+// ---------------------------------------------------------------------------
 
-  // Draw only the boxes that are (at least partially) on screen.
-  const int range = cx / CAR_PITCH + 2;
-  const int first = MAX(0, (car_pos >> 8) - range);
-  const int last = MIN(n - 1, (car_pos >> 8) + range);
-  for (int i = first; i <= last; i++) {
-    const int bx = car_xof(i, CAR_PITCH);          // Box center
-    car_rect(frame, bx - CAR_BOX_W / 2, CAR_BOX_Y,
-                    bx + CAR_BOX_W / 2, CAR_BOX_Y + CAR_BOX_H, HI_COLOR);
-    car_icon(frame, bx, CAR_BOX_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(sdr_state->fileorder[i]));
-  }
+// Text of a given color, centered at x.
+static void text_center(volatile uint8_t *frame, const char *t, int cx, int y, uint8_t color) {
+  draw_text_idx8_bus16(t, (uint8_t*)&frame[y * SCREEN_WIDTH + cx - (int)font_width(t) / 2], SCREEN_WIDTH, color);
+}
 
-  // Fixed selection frame in the middle.
-  car_outline(frame, cx - CAR_BOX_W / 2 - CAR_FRAME_PAD, CAR_BOX_Y - CAR_FRAME_PAD,
-                     cx + CAR_BOX_W / 2 + CAR_FRAME_PAD, CAR_BOX_Y + CAR_BOX_H + CAR_FRAME_PAD,
-                     2, FT_COLOR);
-
-  // Name and size of the selected entry.
-  const t_centry *e = sdr_state->fileorder[smenu.browser.selector];
-  const int ty = CAR_BOX_Y + CAR_BOX_H + CAR_FRAME_PAD + 8;
-  draw_central_text_ovf(e->fname, frame, cx, ty, SCREEN_WIDTH - 16);
-  if (!e->isdir) {
-    char szstr[16] = {0};
-    human_size(szstr, sizeof(szstr), e->filesize);
-    draw_central_text(szstr, frame, cx, ty + 18);
+// Rounded rectangle, corner radius r (0..4) in pixels. The fill uses n palette
+// colors starting at base, from the top row to the bottom row.
+static void ds_rrect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, int r, uint8_t base, int n) {
+  static const uint8_t inset[5][4] = { { 0, 0, 0, 0 }, { 1, 0, 0, 0 }, { 2, 1, 0, 0 }, { 3, 1, 1, 0 }, { 4, 2, 1, 1 } };
+  const int h = y1 - y0;
+  for (int y = y0; y < y1; y++) {
+    const int d = MIN(y - y0, y1 - 1 - y);
+    const int i = d < 4 ? inset[r][d] : 0;
+    car_span(frame, y, x0 + i, x1 - i, base + (h > 1 ? (y - y0) * (n - 1) / (h - 1) : 0));
   }
 }
 
-// Arrow button of the DS title window. Points left or right, dimmed at the ends.
-static void dss_arrow(volatile uint8_t *frame, bool left, bool enabled) {
-  const int x0 = left ? 2 : 218;
-  const int cy = DSS_TITLE_Y + DSS_TITLE_H / 2;
-  draw_box_full(frame, x0, x0 + 20, DSS_TITLE_Y, DSS_TITLE_Y + DSS_TITLE_H, FG_COLOR, HI_COLOR);
-  for (int dy = -5; dy <= 5; dy++) {
+// White plate of an entry: gradient face and a darker lip, 48x48, top at y.
+static void car_plate(volatile uint8_t *frame, int cx, int y) {
+  const int x0 = cx - CAR_BOX_W / 2;
+  ds_rrect(frame, x0, y, x0 + CAR_BOX_W, y + CAR_BOX_H, 4, PL_EDGE, 1);
+  ds_rrect(frame, x0 + 1, y + 1, x0 + CAR_BOX_W - 1, y + CAR_BOX_H - 4, 3, PL_BASE, 6);
+  ds_rrect(frame, x0 + 2, y + CAR_BOX_H - 4, x0 + CAR_BOX_W - 2, y + CAR_BOX_H - 1, 1, PL_SHADE, 1);
+}
+
+// Arrow button of the scroll bar. Dimmed (flat gray) when it can't move.
+static void car_arrow(volatile uint8_t *frame, int x0, bool left, bool enabled) {
+  const int y0 = CAR_BAR_Y;
+  ds_rrect(frame, x0, y0, x0 + 16, y0 + 16, 2, enabled ? BL_EDGE : PL_EDGE, 1);
+  if (enabled)
+    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + 15, 2, BL_BASE, 6);
+  else
+    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + 15, 2, PL_SHADE, 1);
+  const int tip = left ? x0 + 4 : x0 + 12, base = left ? x0 + 10 : x0 + 6;
+  for (int dy = -4; dy <= 4; dy++) {
     const int w = dy < 0 ? -dy : dy;
     if (left)
-      car_span(frame, cy + dy, x0 + 6 + w, x0 + 14, enabled ? FT_COLOR : FG_COLOR);
+      car_span(frame, y0 + 8 + dy, tip + w, base + 1, BAR_WHITE);
     else
-      car_span(frame, cy + dy, x0 + 6, x0 + 14 - w, enabled ? FT_COLOR : FG_COLOR);
+      car_span(frame, y0 + 8 + dy, base, tip + 1 - w, BAR_WHITE);
   }
 }
 
-// DS bottom screen layout (as in the DSi menu): boxes sitting on a shelf, the
-// one in the middle raised and bigger, a title window with arrow buttons below.
-void render_dsscreen(volatile uint8_t *frame) {
-  car_chrome(frame);
+void render_carousel(volatile uint8_t *frame) {
   const int n = smenu.browser.dispentries;
-  if (!n)
-    return;
-  const int sel = smenu.browser.selector;
   const int cx = SCREEN_WIDTH / 2;
   car_ease();
 
-  // The shelf.
-  car_rect(frame, 0, DSS_SHELF_Y, SCREEN_WIDTH, DSS_SHELF_Y + 6, HI_COLOR);
-  car_rect(frame, 0, DSS_SHELF_Y + 6, SCREEN_WIDTH, DSS_SHELF_Y + 8, FG_COLOR);
-
-  // Boxes grow and get a stronger frame as they approach the center. The one
-  // closest to the center is drawn last so it stays on top.
-  const int near = MAX(0, MIN(n - 1, (car_pos + 128) >> 8));
-  const int range = cx / DSS_PITCH + 2;
-  const int first = MAX(0, (car_pos >> 8) - range);
-  const int last = MIN(n - 1, (car_pos >> 8) + range);
-  for (int k = first; k <= last + 1; k++) {
-    const int i = (k == last + 1) ? near : k;       // Last pass: the nearest one
-    if (k <= last && i == near)
-      continue;
-    const int bx = car_xof(i, DSS_PITCH);
-    int dx = bx - cx;
-    if (dx < 0)
-      dx = -dx;
-    int lift = DSS_LIFT - dx * DSS_LIFT / DSS_PITCH;
-    lift = (lift < 0 ? 0 : lift) & ~1;
-    const int size = DSS_BOX + lift;
-    const int isz = DSS_ICON + (lift * 2 / 3 & ~1);
-    const int x0 = bx - size / 2;
-    const int y0 = DSS_SHELF_Y - size;
-    car_rect(frame, x0, y0, x0 + size, DSS_SHELF_Y, lift >= DSS_LIFT - 2 ? FT_COLOR : FG_COLOR);
-    car_rect(frame, x0 + 2, y0 + 2, x0 + size - 2, DSS_SHELF_Y, HI_COLOR);
-    car_icon(frame, bx, y0 + (size - isz) / 2 - 2, isz, entry_icon_kind(sdr_state->fileorder[i]));
+  // Speech bubble with a pointer to the selected plate.
+  ds_rrect(frame, 8, CAR_BUB_Y, SCREEN_WIDTH - 8, CAR_BUB_Y + CAR_BUB_H, 4, PL_EDGE, 1);
+  ds_rrect(frame, 9, CAR_BUB_Y + 1, SCREEN_WIDTH - 9, CAR_BUB_Y + CAR_BUB_H - 1, 3, PL_BASE, 6);
+  for (int r = -1; r < 7; r++) {
+    const int w = 7 - r, y = CAR_BUB_Y + CAR_BUB_H + r;
+    car_span(frame, y, cx - w, cx + w + 1, PL_EDGE);
+    car_span(frame, y, cx - w + 2, cx + w - 1, PL_BASE + 5);
   }
 
-  // Title window with the arrow buttons.
-  dss_arrow(frame, true, sel > 0);
-  dss_arrow(frame, false, sel < n - 1);
-  draw_box_full(frame, 24, 216, DSS_TITLE_Y, DSS_TITLE_Y + DSS_TITLE_H, FG_COLOR, HI_COLOR);
-  const t_centry *e = sdr_state->fileorder[sel];
-  draw_central_text_ovf(e->fname, frame, cx, DSS_TITLE_Y + 4, 176);
+  if (!n) {
+    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, CAR_BUB_Y + 14);
+  } else {
+    // Name and, below it, the size and the current directory. Entry counter at the right.
+    const t_centry *e = sdr_state->fileorder[smenu.browser.selector];
+    char info[MAX_FN_LEN + 16];
+    if (e->isdir) {
+      npf_snprintf(info, sizeof(info), "Folder  %s", smenu.browser.cpath);
+    } else {
+      char szstr[16] = {0};
+      human_size(szstr, sizeof(szstr), e->filesize);
+      npf_snprintf(info, sizeof(info), "%s  %s", szstr, smenu.browser.cpath);
+    }
+    draw_central_text_ovf(e->fname, frame, cx, CAR_BUB_Y + 4, 150);
+    draw_central_text_ovf(info, frame, cx, CAR_BUB_Y + 22, SCREEN_WIDTH - 32);
+    char cnt[16];
+    npf_snprintf(cnt, sizeof(cnt), "%d/%d", smenu.browser.selector + 1, n);
+    draw_rightj_text(cnt, frame, SCREEN_WIDTH - 14, CAR_BUB_Y + 4);
+  }
 
-  // Entry info above the boxes.
-  char info[24] = "Folder";
-  if (!e->isdir)
-    human_size(info, sizeof(info), e->filesize);
-  draw_central_text(info, frame, cx, 20);
+  // The blue slot of the selected entry, under the plates that scroll through it.
+  ds_rrect(frame, cx - CAR_SLOT_W / 2, CAR_SLOT_Y, cx + CAR_SLOT_W / 2, CAR_SLOT_Y + CAR_SLOT_H, 4, BL_EDGE, 1);
+  ds_rrect(frame, cx - CAR_SLOT_W / 2 + 1, CAR_SLOT_Y + 1, cx + CAR_SLOT_W / 2 - 1, CAR_SLOT_Y + CAR_SLOT_H - 1, 3, BL_BASE, 6);
+
+  if (n) {
+    // Draw only the plates that are (at least partially) on screen.
+    const int range = cx / CAR_PITCH + 2;
+    const int first = MAX(0, (car_pos >> 8) - range);
+    const int last = MIN(n - 1, (car_pos >> 8) + range);
+    for (int i = first; i <= last; i++) {
+      const int bx = car_xof(i, CAR_PITCH);
+      car_plate(frame, bx, CAR_PLATE_Y);
+      car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(sdr_state->fileorder[i]));
+    }
+    text_center(frame, sdr_state->fileorder[smenu.browser.selector]->isdir ? "OPEN" : "START",
+                cx, CAR_PLATE_Y + CAR_BOX_H - 2, BAR_WHITE);
+  }
+
+  // Scroll bar: arrow buttons, a track of dots and the thumb.
+  const int sel = smenu.browser.selector;
+  car_arrow(frame, 2, true, n && sel > 0);
+  car_arrow(frame, SCREEN_WIDTH - 18, false, n && sel < n - 1);
+  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y + 1, CAR_TRK_X1, CAR_BAR_Y + 15, 2, PL_EDGE, 1);
+  ds_rrect(frame, CAR_TRK_X0 + 1, CAR_BAR_Y + 2, CAR_TRK_X1 - 1, CAR_BAR_Y + 14, 2, PL_BASE + 2, 4);
+  const int span = CAR_TRK_X1 - CAR_TRK_X0 - 2 - CAR_THUMB;
+  int thumb = CAR_TRK_X0 + 1;
+  if (n > 1) {
+    const int pos = MAX(0, MIN(car_pos, (n - 1) << 8));
+    thumb += (pos >> 4) * span / (((n - 1) << 8) >> 4);
+  }
+  for (int x = CAR_TRK_X0 + 5; x + 3 <= CAR_TRK_X1 - 4; x += 4) {
+    if (x < thumb + CAR_THUMB / 2)
+      car_rect(frame, x, CAR_BAR_Y + 6, x + 3, CAR_BAR_Y + 9, GR_DOT);
+    else
+      car_rect(frame, x + 1, CAR_BAR_Y + 7, x + 3, CAR_BAR_Y + 9, PL_EDGE);
+  }
+  ds_rrect(frame, thumb, CAR_BAR_Y, thumb + CAR_THUMB, CAR_BAR_Y + CAR_THUMB + 2, 2, BL_EDGE, 1);
+  ds_rrect(frame, thumb + 1, CAR_BAR_Y + 1, thumb + CAR_THUMB - 1, CAR_BAR_Y + CAR_THUMB + 1, 2, PL_BASE, 6);
+  car_rect(frame, thumb + CAR_THUMB / 2 - 2, CAR_BAR_Y + CAR_THUMB / 2 - 1, thumb + CAR_THUMB / 2 + 2, CAR_BAR_Y + CAR_THUMB / 2 + 3, BL_EDGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1817,10 +1826,6 @@ static void ds_background(volatile uint8_t *frame, unsigned grid) {
     dma_memcpy16(&frame[y * SCREEN_WIDTH], bg_rows[grid][(((y - 16 + bg_yoff[grid]) % th) ? 0 : 2) | (y & 1)], SCREEN_WIDTH / 2);
 }
 
-// Text of a given color, centered at x.
-static void text_center(volatile uint8_t *frame, const char *t, int cx, int y, uint8_t color) {
-  draw_text_idx8_bus16(t, (uint8_t*)&frame[y * SCREEN_WIDTH + cx - (int)font_width(t) / 2], SCREEN_WIDTH, color);
-}
 
 // Rectangle with rounded corners (3 pixel profile).
 static void car_rrect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, uint8_t color) {
@@ -2198,9 +2203,9 @@ static void home_icon_bitmap(volatile uint8_t *frame, int cx, int cy, unsigned n
 static void home_icon_theme(volatile uint8_t *frame, int cx, int cy) {
   home_icon_bitmap(frame, cx, cy, menu_theme == THEME_DARK ? HOME_ICON_DIM : HOME_ICON_SUN, 1);
 }
-// Settings: the DS icon of its settings button.
+// Settings: the DS icon of its settings button (its greyed variant in the dark theme).
 static void home_icon_settings(volatile uint8_t *frame, int cx, int cy) {
-  home_icon_bitmap(frame, cx, cy, HOME_ICON_SETTINGS, 1);
+  home_icon_bitmap(frame, cx, cy, menu_theme == THEME_DARK ? HOME_ICON_SETTINGS_DARK : HOME_ICON_SETTINGS, 1);
 }
 // Time: the alarm clock.
 static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
@@ -3017,6 +3022,16 @@ void reload_theme(unsigned thnum) {
     MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xb2b2b2);   // Numbers and grid of the TWiLight Menu++ clock face
     MEM_PALETTE[CLK_FGRID] = RGB2GBA(0xd3d3d3);
   }
+  {
+    // DSi menu colors (TWiLight Menu++ DSi theme): white plates and bubble,
+    // steel blue slot; darkened in the dark theme.
+    static const uint32_t plate[8] = { 0xf8f8f8, 0xf0f0f0, 0xe8e8e8, 0xe0e0e0, 0xd8d8d8, 0xd0d0d0, 0xa0a0a0, 0xb8b8b8 };
+    static const uint32_t blue[8] = { 0x98b0c0, 0x88a4b8, 0x7898b0, 0x6890a8, 0x608098, 0x587890, 0x3c5870, 0x306c38 };
+    for (unsigned i = 0; i < 8; i++) {
+      MEM_PALETTE[PL_BASE + i] = mix15(RGB2GBA(plate[i]), 0, dark ? 170 : 0);
+      MEM_PALETTE[BL_BASE + i] = mix15(RGB2GBA(blue[i]), 0, dark ? 110 : 0);
+    }
+  }
   // Scanline rows are a bit closer to the text color than the others.
   MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
   const uint16_t grid = dark ? 0 : themes[thnum].hi_color;
@@ -3117,7 +3132,6 @@ void menu_render(unsigned fcnt) {
         #ifdef SUPPORT_NORGAMES
         render_flashbrowser,
         #endif
-        render_dsscreen,
         render_clock,
         render_settings,
         render_ui_settings,
@@ -3915,9 +3929,9 @@ static void keypress_menu_recent(unsigned newkeys) {
     smenu.recent.seloff = smenu.recent.selector - RECENT_ROWS + 1;
 }
 
-// Keys for the carousel and DS screen tabs, which share the same ROM list.
-// LEFT/RIGHT move one entry and UP/DOWN a few. A opens the entry (enters
-// directories, launches files), B goes to the parent directory and SELECT
+// Keys for the carousel. LEFT/RIGHT move one entry and UP/DOWN a few. A or
+// START (the label on the selected entry) open the entry (enter directories,
+// launch files), B goes to the parent directory and SELECT
 // shows the file management menu, like in the plain ROM browser.
 static void keypress_menu_browse(unsigned newkeys) {
   const int n = smenu.browser.dispentries;
@@ -3934,7 +3948,7 @@ static void keypress_menu_browse(unsigned newkeys) {
     smenu.browser.selector = sel;
 
     // Move into a new dir and/or open a file
-    if (newkeys & KEY_BUTTA) {
+    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA)) {
       t_centry *e = sdr_state->fileorder[sel];
       if (strlen(smenu.browser.cpath) + strlen(e->fname) + 2 > MAX_FN_LEN) {
         spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
@@ -4445,11 +4459,6 @@ void menu_keypress(unsigned newkeys) {
         smenu.menu_tab = MENUTAB_CLOCK;
       }
     }
-    // START switches between the carousel and the DS screen views.
-    else if ((newkeys & KEY_BUTTSTA) && tab0 == MENUTAB_ROMBROWSE)
-      smenu.menu_tab = MENUTAB_DSSCREEN;
-    else if ((newkeys & KEY_BUTTSTA) && tab0 == MENUTAB_DSSCREEN)
-      smenu.menu_tab = MENUTAB_ROMBROWSE;
 
     if (newkeys & (KEY_BUTTL | KEY_BUTTR | KEY_BUTTUP | KEY_BUTTDOWN))
       smenu.anim_state = 0;
@@ -4461,7 +4470,6 @@ void menu_keypress(unsigned newkeys) {
       #ifdef SUPPORT_NORGAMES
       keypress_menu_norbrowse,
       #endif
-      keypress_menu_browse,       // DS screen tab, same list as the carousel
       keypress_menu_clock,
       keypress_menu_settings,
       keypress_menu_uisettings,
@@ -4473,7 +4481,7 @@ void menu_keypress(unsigned newkeys) {
     // B goes back to the home tab, unless the tab uses it (browsers) or the
     // tab was just changed.
     if ((newkeys & KEY_BUTTB) && !editing && smenu.menu_tab == tab0 &&
-        tab0 != MENUTAB_HOME && tab0 != MENUTAB_ROMBROWSE && tab0 != MENUTAB_DSSCREEN)
+        tab0 != MENUTAB_HOME && tab0 != MENUTAB_ROMBROWSE)
       smenu.menu_tab = MENUTAB_HOME;
   }
 }
