@@ -7,3 +7,5 @@
 *.gcno
 *.info
 *.i
+src/menu_messages.h
+src/messages_data.h
