@@ -9,3 +9,6 @@
 *.i
 src/menu_messages.h
 src/messages_data.h
+
+# Host test build outputs
+tests/*.bin
