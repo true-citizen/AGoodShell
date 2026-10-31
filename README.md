@@ -18,6 +18,7 @@ besides of GBA you also have Nintendo DS/DS Lite so in case if your flashcart ge
 you could reflash original SuperFW back using Nintendo DS.</b>
 <details>
 <summary>Click to expand</summary>
+ 
 Installation
 ------------
 Should be same as on SuperFW
