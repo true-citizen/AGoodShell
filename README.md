@@ -16,7 +16,8 @@ but not original SuperCard nor ordinary GBA), so please report all issues/regres
 you found that are not present on official SuperFW on Issues tab of this fork. Its preferable that
 besides of GBA you also have Nintendo DS/DS Lite so in case if your flashcart gets bricked, 
 you could reflash original SuperFW back using Nintendo DS.</b>
-
+<details>
+<summary>Click to expand</summary>
 Installation
 ------------
 Should be same as on SuperFW
@@ -149,7 +150,7 @@ constraints:
  - Maximum ROM size: 32MiB (Supercard's memory size)
  - File path and name limit: 255 utf-8 bytes (not exactly characters!)
  - Maximum number of files+dirs in a directory: 16384
-
+</details>
 Licenses
 --------
 
@@ -160,11 +161,11 @@ build-time) were re-implemented in C++ using the original sources as reference
 and an LLM (they are under zlib and public domain respecitvely). Some
 linkerscript/crt0 code was adapted from AntonioND's work under CC0.
 This specific forks also employs some elements from TwiLightMenu++(GPL-3.0),
-Galmuri font by quiple(OFL-1.1).
+Galmuri font by quiple(OFL-1.1). LLM tools are employed in development, but
+graphic art is drawn by me where applicable.
 
 Special credits
 --------
  - SuperFW and TWiLightMenu++ developers
- - Few buckets of water evaporated to cool LLM servers
  - Piece of 99% chocolate
- - Code of millions(or billions?) programmers and coders.
+ - You, for downloading this fork
