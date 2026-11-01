@@ -174,6 +174,34 @@ all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload
 	# Fix the header/checksum.
 	./tools/fw-fixer.py superfw.gba
 
+# Thumbstart: a small first stage that boots /SFW.GBA from the SD card (see src/thumbstart.c)
+THUMBSTARTFILES=src/gba_ewram_crt0.S \
+        src/thumbstart.c \
+        src/cimpl.c \
+        src/supercard_driver.c \
+        src/supercard_io.S \
+        src/asmutil.S \
+        src/crc.c \
+        fatfs/diskio.c \
+        fatfs/ff.c \
+        fatfs/ffunicode.c
+
+ldscripts/gba_thumbstart.ld.i: ldscripts/gba_ewram.ld
+	cpp -DTHUMBSTART $< -o $@
+
+thumbstart.ewram.gba: $(THUMBSTARTFILES) ldscripts/gba_thumbstart.ld.i
+	$(CC) $(CFLAGS) -DTHUMBSTART -o thumbstart.ewram.elf $(THUMBSTARTFILES) -T ldscripts/gba_thumbstart.ld.i -nostartfiles -Wl,-Map=thumbstart.ewram.map -Wl,--print-memory-usage -fno-builtin
+	$(OBJCOPY) --output-target=binary thumbstart.ewram.elf thumbstart.ewram.gba
+
+thumbstart.ewram.gba.comp: thumbstart.ewram.gba ./upkr.elf
+	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
+
+thumbstart.gba: thumbstart.ewram.gba.comp
+	# Wrap it around the same ROM->EWRAM loader as the firmware (no fonts, patches or assets)
+	$(CC) $(CFLAGS) -DTHUMBSTART -DCOMPRESS_FIRMWARE -DFIRMWARE_PAYLOAD='"thumbstart.ewram.gba"' -DFIRMWARE_PAYLOAD_COMP='"thumbstart.ewram.gba.comp"' -o thumbstart.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(MAXFSIZE)K
+	$(OBJCOPY) --output-target=binary thumbstart.elf thumbstart.gba
+	./tools/fw-fixer.py thumbstart.gba
+
 firmware.ewram.gba: $(INFILES) ingamemenu.payload superfw.dldi.payload directsave.payload ingame_trampoline.payload src/messages_data.h ldscripts/gba_ewram.ld.i
 	# Build the actual firmware image
 	$(CC) $(CFLAGS) -o firmware.ewram.elf $(INFILES) -T ldscripts/gba_ewram.ld.i -nostartfiles -Wl,-Map=firmware.ewram.map -Wl,--print-memory-usage -fno-builtin

@@ -8,7 +8,11 @@
 / Function Configurations
 /---------------------------------------------------------------------------*/
 
+#ifdef THUMBSTART
+#define FF_FS_READONLY	1	/* The Thumbstart loader only reads a file */
+#else
 #define FF_FS_READONLY	0
+#endif
 /* This option switches read-only configuration. (0:Read/Write or 1:Read-only)
 /  Read-only configuration removes writing API functions, f_write(), f_sync(),
 /  f_unlink(), f_mkdir(), f_chmod(), f_rename(), f_truncate(), f_getfree()
@@ -113,8 +117,13 @@
 */
 
 
+#ifdef THUMBSTART
+#define FF_USE_LFN		1	/* (needed for exFAT) static buffer, only short names are used */
+#define FF_MAX_LFN		32
+#else
 #define FF_USE_LFN		2
 #define FF_MAX_LFN		255
+#endif
 /* The FF_USE_LFN switches the support for LFN (long file name).
 /
 /   0: Disable LFN. FF_MAX_LFN has no effect.
@@ -224,7 +233,11 @@
 / System Configurations
 /---------------------------------------------------------------------------*/
 
+#ifdef THUMBSTART
+#define FF_FS_TINY		1
+#else
 #define FF_FS_TINY		0
+#endif
 /* This option switches tiny buffer configuration. (0:Normal or 1:Tiny)
 /  At the tiny configuration, size of file object (FIL) is shrinked FF_MAX_SS bytes.
 /  Instead of private sector buffer eliminated from the file object, common sector
