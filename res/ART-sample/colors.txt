@@ -1,0 +1,10 @@
+# Plastic color of the cartridges in the game browser. Copy this file to the ART folder
+# at the root of the SD card, next to the box art (see tools/artconv.py).
+#
+# One "name=color" per line. The name is the ROM file name without its extension, or the
+# 4 character game code of a GBA ROM (the file name wins). The color is one of black,
+# gray, white, red, orange, yellow, gold, green, teal, blue, purple, pink, or 6 hex
+# digits like #c82828. Games without a line keep the dark plastic of the picture.
+AXVE=red
+AXPE=blue
+BPEE=green

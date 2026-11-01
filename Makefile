@@ -25,6 +25,8 @@ else ifeq ($(BOARD),sd)
   BUNDLE_GBC_EMULATOR = 1
   COMPRESS_FIRMWARE = 1
   MAXFSIZE = 512
+  # The image is very close to the limit, so spend more time compressing it.
+  COMPRESSION_RATIO = 9
   FWFLAVOUR = "SD"
 else ifeq ($(BOARD),chis)
   GLOBAL_DEFINES += -DSUPPORT_NORGAMES -DSUPERCHIS_IO -DFONTS_EXT
@@ -140,6 +142,7 @@ INFILES=src/gba_ewram_crt0.S \
         src/patcher.c \
         src/patches.S \
         src/menu.c \
+        src/cartridge.c \
         src/recent.c \
         src/cheats.c \
         src/flash.c \

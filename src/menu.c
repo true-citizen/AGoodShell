@@ -42,6 +42,7 @@
 #include "res/icons.h"
 #include "res/logo.h"
 #include "res/home_icons.h"
+#include "cartridge.h"
 
 extern t_card_info sd_info;
 extern bool fastew;
@@ -120,12 +121,7 @@ enum {
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
 #define GRAD_N           32
-#define PL_BASE          120     // Carousel (DSi style) colors: plate gradient, edge, lip,
-#define PL_EDGE          126     // blue slot gradient, edge, and the dots of the scroll bar
-#define PL_SHADE         127
-#define BL_BASE          128
-#define BL_EDGE          134
-#define GR_DOT           135
+#define CART_FILL        120     // Label window of cartridges that have no box art
 #define HOME_ICON_BASE   95      // Palette of the TWiLight Menu++ corner icons (bitmap index i -> 95 + i)
 
 // Sound registers (PSG noise channel), used for the clock tick.
@@ -189,23 +185,11 @@ enum {
   ToolsMAX,
 };
 
-// Carousel tab layout (DSi menu style), in pixels.
-#define CAR_BUB_Y        24      // Speech bubble with the name of the entry (the tab is
-#define CAR_BUB_H        46      // drawn 16 rows up, so these are screen rows + 16)
-#define CAR_SLOT_Y       76      // Blue slot of the selected entry
-#define CAR_SLOT_W       64
-#define CAR_SLOT_H       72
-#define CAR_PLATE_Y      82      // Top of the white plates
-#define CAR_PITCH        56      // Distance between the centers of two plates
-#define CAR_BOX_W        48      // Plate size
-#define CAR_BOX_H        48
-#define CAR_ICON_SZ      32      // File icon size
-#define CAR_ICON_Y       6       // Icon offset from the top of the plate
-#define CAR_BAR_Y        160     // Scroll bar along the bottom: arrow buttons, track, thumb
-#define CAR_BAR_H        16
-#define CAR_TRK_X0       16
-#define CAR_TRK_X1       224
-#define CAR_THUMB        14
+// Carousel tab layout (cartridge view), in pixels. The tab is drawn 16 rows up, so rows are screen rows + 16.
+#define CAR_NAME_Y       21      // Name of the entry, above the cartridge
+#define CAR_INFO_Y       162     // "Start" or "Open" and size, below it
+#define CAR_ICON_SZ      32      // File icon size (in the label window of cartridges without art)
+#define CAR_SLOTS        3       // Cartridges with a loaded box art (previous, current, next)
 #define CAR_PAGE          4      // Entries skipped by UP/DOWN
 #define CAR_SPEED_DIV     4      // Easing: move 1/4 of the remaining distance
 // Clock tab:
@@ -489,6 +473,7 @@ _Static_assert (sizeof(t_centry) % 4 == 0, "t_centry must be word-friendly");
 //  - Scratch area 2MiB (for FW updates)
 //  - File list order (~64KiB)
 //  - File list filtered (~64KiB)
+//  - Box art of the 3 cartridges nearest to the selection (~36KiB)
 //  - Browser file information (~13MB)
 //  - Recently played ROMs table (~64KiB)
 //  - Font data (placed by the bootloader at the 15..16MB range)
@@ -498,6 +483,7 @@ typedef struct {
   uint8_t scratch[scratch_mem_size];
   t_centry *fileorder[BROWSER_MAXFN_CNT];
   t_centry *filefilter[BROWSER_MAXFN_CNT];
+  uint8_t cartart[CAR_SLOTS][CART_ART_W * CART_ART_H];   // Box art of the nearby entries
   t_centry fentries[BROWSER_MAXFN_CNT];
   t_rentry rentries[RECENT_MAXFN_CNT];
   t_reg_entry_max nordata;
@@ -1195,6 +1181,8 @@ NOINLINE static void browser_open(const char *fn, uint32_t fs) {
   }
 }
 
+static void cart_flush();
+
 static void browser_reload_sort() {
   // We take the list of files and sort them using a list of pointers instead of
   // actually copying entries. Faster, less memory and allows us to play with it later.
@@ -1255,6 +1243,7 @@ static void browser_reload() {
   // Sort and filter the new list of files/dirs
   browser_reload_sort();
   browser_reload_filter();
+  cart_flush();
 }
 
 // Loads NOR game entries so they can be browsed.
@@ -1576,11 +1565,6 @@ static void car_ease() {
   }
 }
 
-// Screen X of the center of entry i, for the given spacing between entries.
-static int car_xof(int i, int pitch) {
-  return SCREEN_WIDTH / 2 + ((((i << 8) - car_pos) * pitch) >> 8);
-}
-
 // Icons of the file lists, drawn with plain shapes at any size: a folder, a
 // generic file and a game (any ROM the menu can launch).
 enum { ICON_KIND_FOLDER, ICON_KIND_FILE, ICON_KIND_GAME };
@@ -1629,11 +1613,10 @@ static void car_icon(volatile uint8_t *frame, int cx, int y, int sz, unsigned ki
 }
 
 // ---------------------------------------------------------------------------
-// Carousel, in the style of the DSi menu (colors of the DSi theme of TWiLight
-// Menu++): a speech bubble with the name of the selected entry, a row of white
-// plates with the entry icons that slides under a fixed blue slot holding the
-// selected one (labeled START), and a scroll bar with arrow buttons, a dot
-// track and a thumb at the bottom. Everything is drawn with spans, no textures.
+// Carousel: one cartridge per entry, a picture of a GBA cartridge (res/cartridge.png)
+// that fills the screen and slides sideways when the selection moves. Games show
+// their box art in the label window (see cartridge.h) and the plastic can have a
+// color of its own. Folders and other files get a cartridge with an icon instead.
 // ---------------------------------------------------------------------------
 
 // Text of a given color, centered at x.
@@ -1641,121 +1624,127 @@ static void text_center(volatile uint8_t *frame, const char *t, int cx, int y, u
   draw_text_idx8_bus16(t, (uint8_t*)&frame[y * SCREEN_WIDTH + cx - (int)font_width(t) / 2], SCREEN_WIDTH, color);
 }
 
-// Rounded rectangle, corner radius r (0..4) in pixels. The fill uses n palette
-// colors starting at base, from the top row to the bottom row.
-static void ds_rrect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, int r, uint8_t base, int n) {
-  static const uint8_t inset[5][4] = { { 0, 0, 0, 0 }, { 1, 0, 0, 0 }, { 2, 1, 0, 0 }, { 3, 1, 1, 0 }, { 4, 2, 1, 1 } };
-  const int h = y1 - y0;
-  for (int y = y0; y < y1; y++) {
-    const int d = MIN(y - y0, y1 - 1 - y);
-    const int i = d < 4 ? inset[r][d] : 0;
-    car_span(frame, y, x0 + i, x1 - i, base + (h > 1 ? (y - y0) * (n - 1) / (h - 1) : 0));
+// Plastic of folders (anything else defaults to the color of the picture)
+#define CAR_DIR_RGB      0xd8b030
+
+// What is known of the entries next to the selection: the box art is in the SDRAM
+// (sdr_state->cartart), each entry uses the slot (entry number % CAR_SLOTS).
+typedef struct {
+  int idx;                // Entry that the slot holds, or -1
+  bool art;               // Has box art
+  uint32_t rgb;           // Plastic color
+} t_cartslot;
+static t_cartslot cartslot[CAR_SLOTS];
+
+static void cart_flush() {
+  for (unsigned i = 0; i < CAR_SLOTS; i++)
+    cartslot[i].idx = -1;
+}
+
+// Looks for the box art and the plastic color of an entry. This reads files from
+// the SD card, so it is done for one entry at a time, once the scrolling stops.
+static void cart_fill(int idx) {
+  const t_centry *e = sdr_state->filefilter[idx];
+  t_cartslot *s = &cartslot[idx % CAR_SLOTS];
+  s->idx = idx;
+  s->art = false;
+  s->rgb = e->isdir ? CAR_DIR_RGB : CART_DEFAULT_RGB;
+  if (entry_icon_kind(e) != ICON_KIND_GAME)
+    return;
+
+  // Name of the ROM without the extension, then the game code if it is a GBA ROM.
+  const char *ext = find_extension(e->fname);
+  char name[MAX_FN_LEN], path[MAX_FN_LEN + 16], gcode[5];
+  strbcpy(name, e->fname, ext - e->fname);
+  bool havegc = false;
+  uint8_t *art = sdr_state->cartart[idx % CAR_SLOTS];
+
+  npf_snprintf(path, sizeof(path), "/ART/%s.bmp", name);
+  s->art = cart_load_art(path, art);
+  if (!strcasecmp(ext, "gba")) {
+    npf_snprintf(path, sizeof(path), "%s%s", smenu.browser.cpath, e->fname);
+    havegc = cart_read_gcode(path, gcode);
+    if (havegc && !s->art) {
+      npf_snprintf(path, sizeof(path), "/ART/%s.bmp", gcode);
+      s->art = cart_load_art(path, art);
+    }
   }
+  cart_find_color(name, havegc ? gcode : NULL, &s->rgb);
 }
 
-// White plate of an entry: gradient face and a darker lip, 48x48, top at y.
-static void car_plate(volatile uint8_t *frame, int cx, int y) {
-  const int x0 = cx - CAR_BOX_W / 2;
-  ds_rrect(frame, x0, y, x0 + CAR_BOX_W, y + CAR_BOX_H, 4, PL_EDGE, 1);
-  ds_rrect(frame, x0 + 1, y + 1, x0 + CAR_BOX_W - 1, y + CAR_BOX_H - 4, 3, PL_BASE, 6);
-  ds_rrect(frame, x0 + 2, y + CAR_BOX_H - 4, x0 + CAR_BOX_W - 2, y + CAR_BOX_H - 1, 1, PL_SHADE, 1);
-}
-
-// Arrow button of the scroll bar (square, 16x16). Dimmed (flat gray) when it can't move.
-static void car_arrow(volatile uint8_t *frame, int x0, bool left, bool enabled) {
-  const int y0 = CAR_BAR_Y;
-  ds_rrect(frame, x0, y0, x0 + 16, y0 + CAR_BAR_H, 0, enabled ? BL_EDGE : PL_EDGE, 1);
-  if (enabled)
-    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + CAR_BAR_H - 1, 0, BL_BASE, 6);
-  else
-    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + CAR_BAR_H - 1, 0, PL_SHADE, 1);
-  const int tip = left ? x0 + 4 : x0 + 12, base = left ? x0 + 10 : x0 + 6;
+// Small triangle pointing left or right, 9 rows tall, centered at row y.
+static void car_tri(volatile uint8_t *frame, int x, int y, bool left) {
   for (int dy = -4; dy <= 4; dy++) {
-    const int w = dy < 0 ? -dy : dy;
-    if (left)
-      car_span(frame, y0 + 8 + dy, tip + w, base + 1, BAR_WHITE);
-    else
-      car_span(frame, y0 + 8 + dy, base, tip + 1 - w, BAR_WHITE);
+    const int w = 5 - (dy < 0 ? -dy : dy);
+    car_span(frame, y + dy, left ? x + 5 - w : x, left ? x + 5 : x + w, FT_COLOR);
   }
 }
 
 void render_carousel(volatile uint8_t *frame) {
-  const int n = smenu.browser.dispentries;
+  const int n = smenu.browser.dispentries, sel = smenu.browser.selector;
   const int cx = SCREEN_WIDTH / 2;
   car_ease();
 
-  // Speech bubble with a pointer to the selected plate: flat white face, double
-  // frame (darker gray outside, lighter gray inside).
-  ds_rrect(frame, 8, CAR_BUB_Y, SCREEN_WIDTH - 8, CAR_BUB_Y + CAR_BUB_H, 4, PL_EDGE, 1);
-  ds_rrect(frame, 9, CAR_BUB_Y + 1, SCREEN_WIDTH - 9, CAR_BUB_Y + CAR_BUB_H - 1, 3, PL_BASE + 4, 1);
-  ds_rrect(frame, 10, CAR_BUB_Y + 2, SCREEN_WIDTH - 10, CAR_BUB_Y + CAR_BUB_H - 2, 2, PL_BASE, 1);
-  for (int r = -1; r < 7; r++) {
-    const int w = 7 - r, y = CAR_BUB_Y + CAR_BUB_H + r;
-    car_span(frame, y, cx - w, cx + w + 1, PL_EDGE);
-    car_span(frame, y, cx - w + 1, cx + w, PL_BASE + 4);
-    car_span(frame, y, cx - w + 2, cx + w - 1, PL_BASE);
-  }
-
   if (!n) {
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, CAR_BUB_Y + 14);
+    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, CAR_NAME_Y + 66);
+    return;
+  }
+
+  // Once the cartridges stop moving, look up what is missing, the selected entry
+  // first, then the next ones in both directions. One per frame.
+  if (car_pos == sel << 8) {
+    static const int8_t order[3] = { 0, 1, -1 };
+    for (unsigned i = 0; i < 3; i++) {
+      const int j = sel + order[i];
+      if (j >= 0 && j < n && cartslot[j % CAR_SLOTS].idx != j) {
+        cart_fill(j);
+        break;
+      }
+    }
+  }
+
+  // The (up to two) cartridges that are on screen.
+  t_cartview views[2];
+  int vidx[2];
+  unsigned nv = 0;
+  for (int i = car_pos >> 8; i <= (car_pos >> 8) + 1; i++) {
+    const int dx = (((i << 8) - car_pos) * SCREEN_WIDTH) >> 8;
+    if (i < 0 || i >= n || dx <= -SCREEN_WIDTH || dx >= SCREEN_WIDTH)
+      continue;
+    const t_cartslot *s = &cartslot[i % CAR_SLOTS];
+    const bool ready = s->idx == i;
+    const unsigned pal = CART_PAL_PLASTIC + 3 * nv;
+    cart_set_plastic(pal, ready ? s->rgb : CART_DEFAULT_RGB);
+    views[nv] = (t_cartview){ dx, pal, CART_FILL, (ready && s->art) ? sdr_state->cartart[i % CAR_SLOTS] : NULL };
+    vidx[nv++] = i;
+  }
+  cart_render(frame + ui_yshift * SCREEN_WIDTH, views, nv, BG_COLOR);
+
+  // Icons in the label window of the cartridges that have no box art.
+  for (unsigned i = 0; i < nv; i++) {
+    if (!views[i].art)
+      car_icon(frame, CART_ART_X + CART_ART_W / 2 + views[i].dx, ui_yshift + CART_ART_Y + (CART_ART_H - CAR_ICON_SZ) / 2,
+               CAR_ICON_SZ, entry_icon_kind(sdr_state->filefilter[vidx[i]]));
+  }
+
+  // Name and position above, what A does and the size below.
+  const t_centry *e = sdr_state->filefilter[sel];
+  char info[32], cnt[16];
+  if (e->isdir) {
+    strcpy(info, "OPEN");
   } else {
-    // Name and, below it, the size and the current directory. Entry counter at the right.
-    const t_centry *e = sdr_state->filefilter[smenu.browser.selector];
-    char info[MAX_FN_LEN + 16];
-    if (e->isdir) {
-      npf_snprintf(info, sizeof(info), "Folder  %s", smenu.browser.cpath);
-    } else {
-      char szstr[16] = {0};
-      human_size(szstr, sizeof(szstr), e->filesize);
-      npf_snprintf(info, sizeof(info), "%s  %s", szstr, smenu.browser.cpath);
-    }
-    draw_central_text_ovf(e->fname, frame, cx, CAR_BUB_Y + 4, 150);
-    draw_central_text_ovf(info, frame, cx, CAR_BUB_Y + 22, SCREEN_WIDTH - 32);
-    char cnt[16];
-    npf_snprintf(cnt, sizeof(cnt), "%d/%d", smenu.browser.selector + 1, n);
-    draw_rightj_text(cnt, frame, SCREEN_WIDTH - 14, CAR_BUB_Y + 4);
+    char szstr[16] = {0};
+    human_size(szstr, sizeof(szstr), e->filesize);
+    npf_snprintf(info, sizeof(info), "START  %s", szstr);
   }
-
-  // The blue slot of the selected entry, under the plates that scroll through it.
-  ds_rrect(frame, cx - CAR_SLOT_W / 2, CAR_SLOT_Y, cx + CAR_SLOT_W / 2, CAR_SLOT_Y + CAR_SLOT_H, 4, BL_EDGE, 1);
-  ds_rrect(frame, cx - CAR_SLOT_W / 2 + 1, CAR_SLOT_Y + 1, cx + CAR_SLOT_W / 2 - 1, CAR_SLOT_Y + CAR_SLOT_H - 1, 3, BL_BASE, 6);
-
-  if (n) {
-    // Draw only the plates that are (at least partially) on screen.
-    const int range = cx / CAR_PITCH + 2;
-    const int first = MAX(0, (car_pos >> 8) - range);
-    const int last = MIN(n - 1, (car_pos >> 8) + range);
-    for (int i = first; i <= last; i++) {
-      const int bx = car_xof(i, CAR_PITCH);
-      car_plate(frame, bx, CAR_PLATE_Y);
-      car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(sdr_state->filefilter[i]));
-    }
-    text_center(frame, sdr_state->filefilter[smenu.browser.selector]->isdir ? "OPEN" : "START",
-                cx, CAR_PLATE_Y + CAR_BOX_H - 2, BAR_WHITE);
-  }
-
-  // Scroll bar: arrow buttons, a track of dots and the thumb, all square and
-  // touching each other along the bottom of the screen.
-  const int sel = smenu.browser.selector;
-  car_arrow(frame, 0, true, n && sel > 0);
-  car_arrow(frame, SCREEN_WIDTH - 16, false, n && sel < n - 1);
-  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H, 0, PL_EDGE, 1);
-  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y + 1, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H - 1, 0, PL_BASE + 2, 4);
-  const int span = CAR_TRK_X1 - CAR_TRK_X0 - 2 - CAR_THUMB;
-  int thumb = CAR_TRK_X0 + 1;
-  if (n > 1) {
-    const int pos = MAX(0, MIN(car_pos, (n - 1) << 8));
-    thumb += (pos >> 4) * span / (((n - 1) << 8) >> 4);
-  }
-  for (int x = CAR_TRK_X0 + 5; x + 3 <= CAR_TRK_X1 - 4; x += 4) {
-    if (x < thumb + CAR_THUMB / 2)
-      car_rect(frame, x, CAR_BAR_Y + 6, x + 3, CAR_BAR_Y + 9, GR_DOT);
-    else
-      car_rect(frame, x + 1, CAR_BAR_Y + 7, x + 3, CAR_BAR_Y + 9, PL_EDGE);
-  }
-  ds_rrect(frame, thumb, CAR_BAR_Y, thumb + CAR_THUMB, CAR_BAR_Y + CAR_BAR_H, 0, BL_EDGE, 1);
-  ds_rrect(frame, thumb + 1, CAR_BAR_Y + 1, thumb + CAR_THUMB - 1, CAR_BAR_Y + CAR_BAR_H - 1, 0, PL_BASE, 6);
-  car_rect(frame, thumb + CAR_THUMB / 2 - 2, CAR_BAR_Y + CAR_BAR_H / 2 - 2, thumb + CAR_THUMB / 2 + 2, CAR_BAR_Y + CAR_BAR_H / 2 + 2, BL_EDGE);
+  npf_snprintf(cnt, sizeof(cnt), "%d/%d", sel + 1, n);
+  draw_central_text_ovf(e->fname, frame, cx, CAR_NAME_Y, 164);
+  draw_rightj_text(cnt, frame, SCREEN_WIDTH - 4, CAR_NAME_Y);
+  draw_central_text(info, frame, cx, CAR_INFO_Y);
+  if (sel > 0)
+    car_tri(frame, 5, ui_yshift + CART_H / 2, true);
+  if (sel < n - 1)
+    car_tri(frame, SCREEN_WIDTH - 10, ui_yshift + CART_H / 2, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -3031,16 +3020,8 @@ void reload_theme(unsigned thnum) {
     MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xb2b2b2);   // Numbers and grid of the TWiLight Menu++ clock face
     MEM_PALETTE[CLK_FGRID] = RGB2GBA(0xd3d3d3);
   }
-  {
-    // DSi menu colors (TWiLight Menu++ DSi theme): white plates and bubble,
-    // steel blue slot; darkened in the dark theme.
-    static const uint32_t plate[8] = { 0xf8f8f8, 0xf0f0f0, 0xe8e8e8, 0xe0e0e0, 0xd8d8d8, 0xd0d0d0, 0xa0a0a0, 0xb8b8b8 };
-    static const uint32_t blue[8] = { 0x98b0c0, 0x88a4b8, 0x7898b0, 0x6890a8, 0x608098, 0x587890, 0x3c5870, 0x306c38 };
-    for (unsigned i = 0; i < 8; i++) {
-      MEM_PALETTE[PL_BASE + i] = mix15(RGB2GBA(plate[i]), 0, dark ? 170 : 0);
-      MEM_PALETTE[BL_BASE + i] = mix15(RGB2GBA(blue[i]), 0, dark ? 110 : 0);
-    }
-  }
+  MEM_PALETTE[CART_FILL] = mix15(RGB2GBA(0xd8d8d8), 0, dark ? 170 : 0);
+  cart_init_palette();
   // Scanline rows are a bit closer to the text color than the others.
   MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
   const uint16_t grid = dark ? 0 : themes[thnum].hi_color;
@@ -3201,6 +3182,7 @@ void menu_init(int sram_testres) {
   clock_base_ts = clock_ts_default;
   clock_base_frame = frame_count;
   car_pos = 0;
+  cart_flush();
 
   // Reset the file browser as well.
   strcpy(smenu.browser.cpath, "/");
