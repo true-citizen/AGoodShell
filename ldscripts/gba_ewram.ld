@@ -220,5 +220,7 @@ SECTIONS
     /* No heap defined nor used here */
 }
 
+#ifndef THUMBSTART
 #include "validate.inc"
+#endif
 

@@ -48,6 +48,11 @@
 
 #define FWPAYLOAD_ADDR   0x027C0000
 
+#ifndef FIRMWARE_PAYLOAD
+#define FIRMWARE_PAYLOAD "firmware.ewram.gba"
+#define FIRMWARE_PAYLOAD_COMP "firmware.ewram.gba.comp"
+#endif
+
 #define NDS_HEADER_ADDR  0x027FFE00
 #define WRAM_BOOTM_ADDR  0x03800000     /* WRAM were boot code is copied */
 #define GAMEPAK_BASEADDR 0x08000000
@@ -324,6 +329,8 @@ _main_end:
   ldr r1, =0x0404    // Mode 4, BG2 enabled
   strh r1, [r8]
 
+  @ (the Thumbstart loader needs none of these assets)
+  #ifndef THUMBSTART
   @ Uncompress/extract the font glyphs. This supports any size.
   ldr r0, =font_start
   #if defined(COMPRESS_FONTS)
@@ -367,6 +374,8 @@ _main_end:
   mov r1, $ASSETS_ADDR
   mov r2, $((assets_end - assets_start + 2047) / 2048)
   bl sdram_copy
+
+  #endif
 
   @ Now we can proceed to unpack the firmware to EWRAM
   mov r0, r12
@@ -687,13 +696,14 @@ _end_bootloader:
 @ apack compressed assets!
 payload_ewram:
   #if defined(COMPRESS_FIRMWARE)
-    .incbin "firmware.ewram.gba.comp"
+    .incbin FIRMWARE_PAYLOAD_COMP
   #else
-    .incbin "firmware.ewram.gba"
+    .incbin FIRMWARE_PAYLOAD
   #endif
   .balign 4
 payload_ewram_end:
 
+#ifndef THUMBSTART
 patches_start:
   #if defined(COMPRESS_PATCHES)
     .incbin "res/patches.db.comp"
@@ -764,8 +774,10 @@ assets_start:
   .word 0               @ End of asset list
   .word 0
 assets_end:
+#endif
 
-#if defined(SUPPORT_NORGAMES)
+
+#if defined(SUPPORT_NORGAMES) && !defined(THUMBSTART)
   // We place a mirror copy of the DirSave payload so it can be used by NOR games.
   .org 0x00190000
   .incbin "directsave.payload"
