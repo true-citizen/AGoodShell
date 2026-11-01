@@ -121,7 +121,13 @@ enum {
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
 #define GRAD_N           32
-#define CART_FILL        120     // Label window of cartridges that have no box art
+#define PL_BASE          120     // Carousel (DSi style) colors: plate gradient, edge, lip,
+#define PL_EDGE          126     // blue slot gradient, edge, and the dots of the scroll bar
+#define PL_SHADE         127
+#define BL_BASE          128
+#define BL_EDGE          134
+#define GR_DOT           135
+#define CART_FILL        (PL_BASE + 4)   // Label window of cartridges that have no box art (light gray)
 #define HOME_ICON_BASE   95      // Palette of the TWiLight Menu++ corner icons (bitmap index i -> 95 + i)
 
 // Sound registers (PSG noise channel), used for the clock tick.
@@ -147,9 +153,10 @@ enum {
   UiSetASpd  = 3,
   UiSetHid   = 4,
   UiSetAccent = 5,
-  UiSetName  = 6,
-  UiSetSave  = 7,
-  UiSetMAX   = 7,
+  UiSetCarou = 6,
+  UiSetName  = 7,
+  UiSetSave  = 8,
+  UiSetMAX   = 8,
 };
 
 // Accent colors, the 16 favorite colors of the DS.
@@ -185,11 +192,32 @@ enum {
   ToolsMAX,
 };
 
-// Carousel tab layout (cartridge view), in pixels. The tab is drawn 16 rows up, so rows are screen rows + 16.
+// Classic carousel layout (DSi menu style), in pixels.
+#define CAR_BUB_Y        24      // Speech bubble with the name of the entry (the tab is
+#define CAR_BUB_H        46      // drawn 16 rows up, so these are screen rows + 16)
+#define CAR_SLOT_Y       76      // Blue slot of the selected entry
+#define CAR_SLOT_W       64
+#define CAR_SLOT_H       72
+#define CAR_PLATE_Y      82      // Top of the white plates
+#define CAR_PITCH        56      // Distance between the centers of two plates
+#define CAR_BOX_W        48      // Plate size
+#define CAR_BOX_H        48
+#define CAR_ICON_Y       6       // Icon offset from the top of the plate
+#define CAR_BAR_Y        160     // Scroll bar along the bottom: arrow buttons, track, thumb
+#define CAR_BAR_H        16
+#define CAR_TRK_X0       16
+#define CAR_TRK_X1       224
+#define CAR_THUMB        14
+// Cartridge carousel layout, in pixels. The tab is drawn 16 rows up, so rows are screen rows + 16.
 #define CAR_NAME_Y       21      // Name of the entry, above the cartridge
 #define CAR_INFO_Y       162     // "Start" or "Open" and size, below it
 #define CAR_ICON_SZ      32      // File icon size (in the label window of cartridges without art)
 #define CAR_SLOTS        3       // Cartridges with a loaded box art (previous, current, next)
+#ifdef NO_CLASSIC_CAROUSEL
+#define CLASSIC_AVAILABLE 0     // (does not fit in the flash of the SD flavour)
+#else
+#define CLASSIC_AVAILABLE 1
+#endif
 #define CAR_PAGE          4      // Entries skipped by UP/DOWN
 #define CAR_SPEED_DIV     4      // Easing: move 1/4 of the remaining distance
 // Clock tab:
@@ -1565,6 +1593,11 @@ static void car_ease() {
   }
 }
 
+// Screen X of the center of entry i, for the given spacing between entries.
+static int car_xof(int i, int pitch) {
+  return SCREEN_WIDTH / 2 + ((((i << 8) - car_pos) * pitch) >> 8);
+}
+
 // Icons of the file lists, drawn with plain shapes at any size: a folder, a
 // generic file and a game (any ROM the menu can launch).
 enum { ICON_KIND_FOLDER, ICON_KIND_FILE, ICON_KIND_GAME };
@@ -1680,7 +1713,7 @@ static void car_tri(volatile uint8_t *frame, int x, int y, bool left) {
   }
 }
 
-void render_carousel(volatile uint8_t *frame) {
+static void render_carousel_cart(volatile uint8_t *frame) {
   const int n = smenu.browser.dispentries, sel = smenu.browser.selector;
   const int cx = SCREEN_WIDTH / 2;
   car_ease();
@@ -1745,6 +1778,142 @@ void render_carousel(volatile uint8_t *frame) {
     car_tri(frame, 5, ui_yshift + CART_H / 2, true);
   if (sel < n - 1)
     car_tri(frame, SCREEN_WIDTH - 10, ui_yshift + CART_H / 2, false);
+}
+
+#ifndef NO_CLASSIC_CAROUSEL
+// ---------------------------------------------------------------------------
+// Classic carousel, in the style of the DSi menu (colors of the DSi theme of TWiLight
+// Menu++): a speech bubble with the name of the selected entry, a row of white
+// plates with the entry icons that slides under a fixed blue slot, and a scroll bar.
+// ---------------------------------------------------------------------------
+
+// Rounded rectangle, corner radius r (0..4) in pixels. The fill uses n palette
+// colors starting at base, from the top row to the bottom row.
+static void ds_rrect(volatile uint8_t *frame, int x0, int y0, int x1, int y1, int r, uint8_t base, int n) {
+  static const uint8_t inset[5][4] = { { 0, 0, 0, 0 }, { 1, 0, 0, 0 }, { 2, 1, 0, 0 }, { 3, 1, 1, 0 }, { 4, 2, 1, 1 } };
+  const int h = y1 - y0;
+  for (int y = y0; y < y1; y++) {
+    const int d = MIN(y - y0, y1 - 1 - y);
+    const int i = d < 4 ? inset[r][d] : 0;
+    car_span(frame, y, x0 + i, x1 - i, base + (h > 1 ? (y - y0) * (n - 1) / (h - 1) : 0));
+  }
+}
+
+// White plate of an entry: gradient face and a darker lip, 48x48, top at y.
+static void car_plate(volatile uint8_t *frame, int cx, int y) {
+  const int x0 = cx - CAR_BOX_W / 2;
+  ds_rrect(frame, x0, y, x0 + CAR_BOX_W, y + CAR_BOX_H, 4, PL_EDGE, 1);
+  ds_rrect(frame, x0 + 1, y + 1, x0 + CAR_BOX_W - 1, y + CAR_BOX_H - 4, 3, PL_BASE, 6);
+  ds_rrect(frame, x0 + 2, y + CAR_BOX_H - 4, x0 + CAR_BOX_W - 2, y + CAR_BOX_H - 1, 1, PL_SHADE, 1);
+}
+
+// Arrow button of the scroll bar (square, 16x16). Dimmed (flat gray) when it can't move.
+static void car_arrow(volatile uint8_t *frame, int x0, bool left, bool enabled) {
+  const int y0 = CAR_BAR_Y;
+  ds_rrect(frame, x0, y0, x0 + 16, y0 + CAR_BAR_H, 0, enabled ? BL_EDGE : PL_EDGE, 1);
+  if (enabled)
+    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + CAR_BAR_H - 1, 0, BL_BASE, 6);
+  else
+    ds_rrect(frame, x0 + 1, y0 + 1, x0 + 15, y0 + CAR_BAR_H - 1, 0, PL_SHADE, 1);
+  const int tip = left ? x0 + 4 : x0 + 12, base = left ? x0 + 10 : x0 + 6;
+  for (int dy = -4; dy <= 4; dy++) {
+    const int w = dy < 0 ? -dy : dy;
+    if (left)
+      car_span(frame, y0 + 8 + dy, tip + w, base + 1, BAR_WHITE);
+    else
+      car_span(frame, y0 + 8 + dy, base, tip + 1 - w, BAR_WHITE);
+  }
+}
+
+static void render_carousel_classic(volatile uint8_t *frame) {
+  const int n = smenu.browser.dispentries;
+  const int cx = SCREEN_WIDTH / 2;
+  car_ease();
+
+  // Speech bubble with a pointer to the selected plate: flat white face, double
+  // frame (darker gray outside, lighter gray inside).
+  ds_rrect(frame, 8, CAR_BUB_Y, SCREEN_WIDTH - 8, CAR_BUB_Y + CAR_BUB_H, 4, PL_EDGE, 1);
+  ds_rrect(frame, 9, CAR_BUB_Y + 1, SCREEN_WIDTH - 9, CAR_BUB_Y + CAR_BUB_H - 1, 3, PL_BASE + 4, 1);
+  ds_rrect(frame, 10, CAR_BUB_Y + 2, SCREEN_WIDTH - 10, CAR_BUB_Y + CAR_BUB_H - 2, 2, PL_BASE, 1);
+  for (int r = -1; r < 7; r++) {
+    const int w = 7 - r, y = CAR_BUB_Y + CAR_BUB_H + r;
+    car_span(frame, y, cx - w, cx + w + 1, PL_EDGE);
+    car_span(frame, y, cx - w + 1, cx + w, PL_BASE + 4);
+    car_span(frame, y, cx - w + 2, cx + w - 1, PL_BASE);
+  }
+
+  if (!n) {
+    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, CAR_BUB_Y + 14);
+  } else {
+    // Name and, below it, the size and the current directory. Entry counter at the right.
+    const t_centry *e = sdr_state->filefilter[smenu.browser.selector];
+    char info[MAX_FN_LEN + 16];
+    if (e->isdir) {
+      npf_snprintf(info, sizeof(info), "Folder  %s", smenu.browser.cpath);
+    } else {
+      char szstr[16] = {0};
+      human_size(szstr, sizeof(szstr), e->filesize);
+      npf_snprintf(info, sizeof(info), "%s  %s", szstr, smenu.browser.cpath);
+    }
+    draw_central_text_ovf(e->fname, frame, cx, CAR_BUB_Y + 4, 150);
+    draw_central_text_ovf(info, frame, cx, CAR_BUB_Y + 22, SCREEN_WIDTH - 32);
+    char cnt[16];
+    npf_snprintf(cnt, sizeof(cnt), "%d/%d", smenu.browser.selector + 1, n);
+    draw_rightj_text(cnt, frame, SCREEN_WIDTH - 14, CAR_BUB_Y + 4);
+  }
+
+  // The blue slot of the selected entry, under the plates that scroll through it.
+  ds_rrect(frame, cx - CAR_SLOT_W / 2, CAR_SLOT_Y, cx + CAR_SLOT_W / 2, CAR_SLOT_Y + CAR_SLOT_H, 4, BL_EDGE, 1);
+  ds_rrect(frame, cx - CAR_SLOT_W / 2 + 1, CAR_SLOT_Y + 1, cx + CAR_SLOT_W / 2 - 1, CAR_SLOT_Y + CAR_SLOT_H - 1, 3, BL_BASE, 6);
+
+  if (n) {
+    // Draw only the plates that are (at least partially) on screen.
+    const int range = cx / CAR_PITCH + 2;
+    const int first = MAX(0, (car_pos >> 8) - range);
+    const int last = MIN(n - 1, (car_pos >> 8) + range);
+    for (int i = first; i <= last; i++) {
+      const int bx = car_xof(i, CAR_PITCH);
+      car_plate(frame, bx, CAR_PLATE_Y);
+      car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(sdr_state->filefilter[i]));
+    }
+    text_center(frame, sdr_state->filefilter[smenu.browser.selector]->isdir ? "OPEN" : "START",
+                cx, CAR_PLATE_Y + CAR_BOX_H - 2, BAR_WHITE);
+  }
+
+  // Scroll bar: arrow buttons, a track of dots and the thumb, all square and
+  // touching each other along the bottom of the screen.
+  const int sel = smenu.browser.selector;
+  car_arrow(frame, 0, true, n && sel > 0);
+  car_arrow(frame, SCREEN_WIDTH - 16, false, n && sel < n - 1);
+  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H, 0, PL_EDGE, 1);
+  ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y + 1, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H - 1, 0, PL_BASE + 2, 4);
+  const int span = CAR_TRK_X1 - CAR_TRK_X0 - 2 - CAR_THUMB;
+  int thumb = CAR_TRK_X0 + 1;
+  if (n > 1) {
+    const int pos = MAX(0, MIN(car_pos, (n - 1) << 8));
+    thumb += (pos >> 4) * span / (((n - 1) << 8) >> 4);
+  }
+  for (int x = CAR_TRK_X0 + 5; x + 3 <= CAR_TRK_X1 - 4; x += 4) {
+    if (x < thumb + CAR_THUMB / 2)
+      car_rect(frame, x, CAR_BAR_Y + 6, x + 3, CAR_BAR_Y + 9, GR_DOT);
+    else
+      car_rect(frame, x + 1, CAR_BAR_Y + 7, x + 3, CAR_BAR_Y + 9, PL_EDGE);
+  }
+  ds_rrect(frame, thumb, CAR_BAR_Y, thumb + CAR_THUMB, CAR_BAR_Y + CAR_BAR_H, 0, BL_EDGE, 1);
+  ds_rrect(frame, thumb + 1, CAR_BAR_Y + 1, thumb + CAR_THUMB - 1, CAR_BAR_Y + CAR_BAR_H - 1, 0, PL_BASE, 6);
+  car_rect(frame, thumb + CAR_THUMB / 2 - 2, CAR_BAR_Y + CAR_BAR_H / 2 - 2, thumb + CAR_THUMB / 2 + 2, CAR_BAR_Y + CAR_BAR_H / 2 + 2, BL_EDGE);
+}
+
+#endif
+
+// The carousel of the browser tab, in the style chosen in the UI settings.
+void render_carousel(volatile uint8_t *frame) {
+  #ifndef NO_CLASSIC_CAROUSEL
+  if (carousel_classic)
+    render_carousel_classic(frame);
+  else
+  #endif
+    render_carousel_cart(frame);
 }
 
 // ---------------------------------------------------------------------------
@@ -2847,7 +3016,7 @@ void render_settings(volatile uint8_t *frame) {
 }
 
 void render_ui_settings(volatile uint8_t *frame) {
-  const unsigned colx = 170, y0 = 18, step = 16;
+  const unsigned colx = 170, y0 = 14, step = 15;
   char tmpbuf[64];
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %u >", menu_theme + 1U);
   draw_text_ovf(msgs[lang_id][MSG_UIS_THEME], frame, 8, y0, 224);
@@ -2871,26 +3040,29 @@ void render_ui_settings(volatile uint8_t *frame) {
   draw_text_ovf("Accent color", frame, 8, y0 + step * 5, 224);
   draw_central_text(tmpbuf, frame, colx, y0 + step * 5);
 
-  draw_text_ovf("User name", frame, 8, y0 + step * 6, 224);
+  draw_text_ovf("Carousel", frame, 8, y0 + step * 6, 224);
+  draw_central_text(!CLASSIC_AVAILABLE ? "Cartridge" : carousel_classic ? "< Classic >" : "< Cartridge >", frame, colx, y0 + step * 6);
+
+  draw_text_ovf("User name", frame, 8, y0 + step * 7, 224);
   if (smenu.uiset.editing) {
     // Show the whole (padded) name with an underline on the edited character.
     const int sx = (int)colx - (int)font_width(user_name) / 2;
-    draw_text_idx8_bus16(user_name, (uint8_t*)&frame[(y0 + step * 6) * SCREEN_WIDTH + sx], SCREEN_WIDTH, FT_COLOR);
+    draw_text_idx8_bus16(user_name, (uint8_t*)&frame[(y0 + step * 7) * SCREEN_WIDTH + sx], SCREEN_WIDTH, FT_COLOR);
     char pre[USERNAME_MAX + 1], one[2] = { user_name[smenu.uiset.cursor], 0 };
     memcpy(pre, user_name, smenu.uiset.cursor);
     pre[smenu.uiset.cursor] = 0;
     const int cx = sx + (int)font_width(pre);
-    car_rect(frame, cx, y0 + step * 6 + 14, cx + (int)font_width(one), y0 + step * 6 + 16, ACC_COLOR);
+    car_rect(frame, cx, y0 + step * 7 + 14, cx + (int)font_width(one), y0 + step * 7 + 16, ACC_COLOR);
   } else {
-    draw_central_text(user_name[0] ? user_name : "-", frame, colx, y0 + step * 6);
+    draw_central_text(user_name[0] ? user_name : "-", frame, colx, y0 + step * 7);
   }
 
   if (smenu.uiset.selector != UiSetSave)
     for (unsigned i = 0; i < 240; i += 16)
       render_icon_trans(i, y0 + smenu.uiset.selector * step, 63);
 
-  draw_button_box(frame, 20, 220, 136, 156, smenu.uiset.selector == UiSetSave);
-  draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 138);
+  draw_button_box(frame, 20, 220, 138, 157, smenu.uiset.selector == UiSetSave);
+  draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 139);
 }
 
 void render_info(volatile uint8_t *frame) {
@@ -3020,7 +3192,16 @@ void reload_theme(unsigned thnum) {
     MEM_PALETTE[CLK_TICK]  = RGB2GBA(0xb2b2b2);   // Numbers and grid of the TWiLight Menu++ clock face
     MEM_PALETTE[CLK_FGRID] = RGB2GBA(0xd3d3d3);
   }
-  MEM_PALETTE[CART_FILL] = mix15(RGB2GBA(0xd8d8d8), 0, dark ? 170 : 0);
+  {
+    // DSi menu colors (TWiLight Menu++ DSi theme): white plates and bubble,
+    // steel blue slot; darkened in the dark theme.
+    static const uint32_t plate[8] = { 0xf8f8f8, 0xf0f0f0, 0xe8e8e8, 0xe0e0e0, 0xd8d8d8, 0xd0d0d0, 0xa0a0a0, 0xb8b8b8 };
+    static const uint32_t blue[8] = { 0x98b0c0, 0x88a4b8, 0x7898b0, 0x6890a8, 0x608098, 0x587890, 0x3c5870, 0x306c38 };
+    for (unsigned i = 0; i < 8; i++) {
+      MEM_PALETTE[PL_BASE + i] = mix15(RGB2GBA(plate[i]), 0, dark ? 170 : 0);
+      MEM_PALETTE[BL_BASE + i] = mix15(RGB2GBA(blue[i]), 0, dark ? 110 : 0);
+    }
+  }
   cart_init_palette();
   // Scanline rows are a bit closer to the text color than the others.
   MEM_PALETTE[SL_BG] = mix15(themes[thnum].bg_color, themes[thnum].ft_color, 14);
@@ -4244,6 +4425,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       lang_id = (lang_id + LANG_COUNT - 1) % LANG_COUNT;
     else if (smenu.uiset.selector == UiSetAccent)
       accent_color = (accent_color + ACCENT_COUNT - 1) % ACCENT_COUNT;
+    else if (smenu.uiset.selector == UiSetCarou)
+      carousel_classic ^= CLASSIC_AVAILABLE;
   }
   if (newkeys & KEY_BUTTRIGHT) {
     if (smenu.uiset.selector == UiSetTheme)
@@ -4258,6 +4441,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       lang_id = (lang_id + 1) % LANG_COUNT;
     else if (smenu.uiset.selector == UiSetAccent)
       accent_color = (accent_color + 1) % ACCENT_COUNT;
+    else if (smenu.uiset.selector == UiSetCarou)
+      carousel_classic ^= CLASSIC_AVAILABLE;
   }
 
   if (newkeys & KEY_BUTTA && smenu.uiset.selector == UiSetName) {

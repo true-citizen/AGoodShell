@@ -74,6 +74,7 @@ extern uint8_t lang_id;
 extern uint8_t recent_menu;
 extern uint8_t hide_hidden;
 extern uint8_t anim_speed;
+extern uint8_t carousel_classic;      // 1 for the classic (DSi style) carousel, 0 for cartridges
 extern uint8_t accent_color;          // Index of the accent color (DS favorite colors)
 #define USERNAME_MAX 10
 extern char user_name[USERNAME_MAX + 1];  // Name shown in the info bar

@@ -112,6 +112,7 @@ uint8_t rtcspeed_default = 3;
 uint32_t rtcvalue_default = 45568800U;
 
 uint8_t accent_color = 11;
+uint8_t carousel_classic = 0;
 char user_name[USERNAME_MAX + 1] = "User";
 
 // Last time the user set in the clock tab (the cart has no RTC): 2026-01-01.
@@ -138,9 +139,10 @@ bool save_ui_settings() {
     "hide_hidden=%u\n"
     "clock_ts=%lu\n"
     "accent=%u\n"
+    "carousel=%u\n"
     "username=%s\n",
     menu_theme, (lc & 0xFF), (lc >> 8), recent_menu, anim_speed, hide_hidden,
-    clock_ts_default, accent_color, user_name);
+    clock_ts_default, accent_color, carousel_classic, user_name);
 
   UINT wrbytes;
   FRESULT res = f_write(&fd, buf, strlen(buf), &wrbytes);
@@ -261,6 +263,7 @@ static void parse_ui_settings(void *usr, const char *var, const char *value) {
       { "hide_hidden", &hide_hidden, 2 },
       { "anim_speed",  &anim_speed,  animspd_cnt },
       { "accent",      &accent_color, ACCENT_COUNT },
+      { "carousel",    &carousel_classic, 2 },
     };
     unsigned valu = parseuint(value);
     for (unsigned i = 0; i < sizeof(uintset)/sizeof(uintset[0]); i++)
