@@ -21,19 +21,44 @@ you could reflash original SuperFW back using Nintendo DS.</b>
  
 Installation
 ------------
-Should be same as on SuperFW
 
-Check https://superfw.davidgf.net/docs/install/flash/ for more details.
+Documentation for the original SuperFW is at https://superfw.davidgf.net/docs/install/flash/
+but this fork recommends a different main method, described below.
+
+### Recommended: Thumbstart bootloader + sfw.gba on the SD card
+
+The firmware is too big for the flash of SuperCard/SuperChis once the carousel
+art and DSi-style UI are included, so the recommended setup is split in two:
+
+ 1. Flash the tiny **Thumbstart** bootloader (`thumbstart.gba`, built with
+    `make BOARD=<chis|sd|lite> thumbstart.gba`, see docs/thumbstart.md) into
+    the cartridge's flash. It is only a few KB.
+ 2. Copy the firmware to the **root of the SD card** with the name `sfw.gba`
+    (`SFW.GBA`). Thumbstart loads it from there on every boot (chain-loading).
+
+Flash Thumbstart the same way you would flash any other firmware (see below:
+from the Info tab of a running SuperFW/SCFW, or using an NDS). After that,
+updating is just replacing `sfw.gba` on the SD card, no flashing needed. This
+also removes the flash size limit, so all features (including both carousel
+styles) fit.
+
+Note: the Thumbstart path has had little testing on real hardware, so keep an
+NDS and a Slot-1 cart around to restore a working firmware if needed.
+
+### Discouraged: flashing the firmware directly
+
+Flashing the full firmware (.fw) straight into the cartridge is still possible
+but **discouraged**: the image must fit in the flash (the SD and Lite builds
+have features trimmed for that, e.g. the DSi carousel is not available on the
+SD build), every update needs a new flash, and an interrupted flash can brick
+the cart.
 
 The firmware can be chain-loaded using another firmware (ie. the default
-SuperCard firmware or SCFW) and loaded as a regular game. It can also be
-installed on the internal flash device. Installing it enables some nice
-features such as SDHC and exFAT compatibility.
+SuperCard firmware or SCFW) and loaded as a regular game. To flash it, load it
+first, then use it to flash itself: enable flashing in the Info tab and pick
+the .fw file. It is strongly recommended to reboot your GBA after flashing.
 
-To install the firmware you can simply load it first, and then use SuperFW
-to flash itself on the flash. You will need to enable flashing in the Info
-tab and then pick the .fw file and flash it. It is strongly recommended to
-reboot your GBA after flashing.
+### Recovery / flashing with an NDS
 
 Flashing is also possible using an NDS. This is particularly useful if you
 _brick_ your Supercard (ie. interrupting flashing, low battery conditions

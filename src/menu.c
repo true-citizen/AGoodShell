@@ -3041,7 +3041,7 @@ void render_ui_settings(volatile uint8_t *frame) {
   draw_central_text(tmpbuf, frame, colx, y0 + step * 5);
 
   draw_text_ovf("Carousel", frame, 8, y0 + step * 6, 224);
-  draw_central_text(!CLASSIC_AVAILABLE ? "Cartridge" : carousel_classic ? "< Classic >" : "< Cartridge >", frame, colx, y0 + step * 6);
+  draw_central_text(!CLASSIC_AVAILABLE ? "Cartridge" : carousel_classic ? "< DSi >" : "< Cartridge >", frame, colx, y0 + step * 6);
 
   draw_text_ovf("User name", frame, 8, y0 + step * 7, 224);
   if (smenu.uiset.editing) {
