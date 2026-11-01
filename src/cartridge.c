@@ -9,7 +9,6 @@
 #include "fatfs/ff.h"
 #include "res/cartridge.h"
 
-_Static_assert(CART_RLE_ART_X == CART_ART_X && CART_RLE_ART_Y == CART_ART_Y, "label window moved, update cartridge.h");
 #define COLORS_FILE      "/ART/colors.txt"
 
 // ---------------------------------------------------------------------------
@@ -22,6 +21,7 @@ _Static_assert(CART_RLE_ART_X == CART_ART_X && CART_RLE_ART_Y == CART_ART_Y, "la
 _Static_assert(LVL_R * LVL_G * LVL_B == CART_PAL_ART_CNT && CART_PAL_ART + CART_PAL_ART_CNT <= 240, "box art palette");
 
 void cart_init_palette() {
+  MEM_PALETTE[CART_PAL_PIN] = RGB2GBA(0xfbf236);
   for (unsigned b = 0; b < LVL_B; b++)
     for (unsigned g = 0; g < LVL_G; g++)
       for (unsigned r = 0; r < LVL_R; r++)
@@ -47,6 +47,30 @@ void cart_set_plastic(unsigned pal, uint32_t rgb) {
 }
 
 // ---------------------------------------------------------------------------
+// Cartridge types
+// ---------------------------------------------------------------------------
+
+static const struct { const char *ext; uint8_t type; } cart_exts[] = {
+  { "gb", CART_GB }, { "gbc", CART_GBC }, { "sv", CART_SV }, { "gg", CART_GG }, { "nes", CART_NES },
+  { "pce", CART_PCE }, { "ngc", CART_NGC }, { "sms", CART_SMS }, { "sg", CART_SMS },
+};
+
+unsigned cart_type(const char *ext) {
+  for (unsigned i = 0; i < sizeof(cart_exts) / sizeof(cart_exts[0]); i++)
+    if (!strcasecmp(ext, cart_exts[i].ext))
+      return cart_exts[i].type < CART_TYPES ? cart_exts[i].type : CART_GBA;
+  return CART_GBA;
+}
+
+t_cartwin cart_window(unsigned type) {
+  return (t_cartwin){ cart_pics[type].x, cart_pics[type].y, cart_pics[type].w, cart_pics[type].h };
+}
+
+void cart_unpack(unsigned type, uint8_t *dst) {
+  upkr_unpack16(dst, &cart_pics_data[cart_pics[type].off]);
+}
+
+// ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
 
@@ -68,8 +92,10 @@ static const uint8_t *decode_row(const uint8_t *p, unsigned y, const t_cartview 
       if (x0 < x1) {
         if (c < 4)
           memset(&line[x0], v->pal + c - 1, x1 - x0);
+        else if (c > 4)
+          memset(&line[x0], CART_PAL_PIN, x1 - x0);
         else if (v->art)
-          memcpy(&line[x0], &v->art[(y - CART_ART_Y) * CART_ART_W + x + skip - CART_ART_X], x1 - x0);
+          memcpy(&line[x0], &v->art[(y - v->win.y) * CART_STRIDE(v->win.w) + x + skip - v->win.x], x1 - x0);
         else
           memset(&line[x0], v->fill, x1 - x0);
       }
@@ -84,7 +110,7 @@ void cart_render(volatile uint8_t *rows, const t_cartview *views, unsigned count
   uint16_t line16[CART_W / 2];
   uint8_t *line = (uint8_t*)line16;
   for (unsigned i = 0; i < count; i++)
-    next[i] = last[i] = cart_rle;
+    next[i] = last[i] = views[i].rle;
 
   for (unsigned y = 0; y < CART_H; y++) {
     memset(line, bg, CART_W);
@@ -115,12 +141,12 @@ static uint32_t le(const uint8_t *p, unsigned n) {
 // Ordered dither thresholds (4x4 Bayer matrix, scaled to 8..248)
 static const uint8_t bayer[16] = { 8, 136, 40, 168, 200, 72, 232, 104, 56, 184, 24, 152, 248, 120, 216, 88 };
 
-bool cart_load_art(const char *path, uint8_t *dst) {
+bool cart_load_art(const char *path, uint8_t *dst, t_cartwin win) {
   FIL fd;
   if (FR_OK != f_open(&fd, path, FA_READ))
     return false;
 
-  uint8_t hdr[54], row[CART_ART_W * 4];
+  uint8_t hdr[54], row[256 * 4];
   uint32_t pal[256];
   UINT rd;
   bool ok = false;
@@ -131,7 +157,8 @@ bool cart_load_art(const char *path, uint8_t *dst) {
     const uint32_t dataoff = le(&hdr[10], 4), dibsize = le(&hdr[14], 4);
     const int32_t w = le(&hdr[18], 4), h = le(&hdr[22], 4);
     const unsigned bpp = le(&hdr[28], 2);
-    if (dibsize < 40 || le(&hdr[30], 4) != 0 || w != CART_ART_W || (h != CART_ART_H && h != -CART_ART_H))
+    const unsigned sw = w, sh = h < 0 ? -h : h;
+    if (dibsize < 40 || le(&hdr[30], 4) != 0 || w <= 0 || sw > 256 || !sh || sh > 256)
       break;
     if (bpp != 8 && bpp != 24 && bpp != 32)
       break;
@@ -145,26 +172,25 @@ bool cart_load_art(const char *path, uint8_t *dst) {
         break;
     }
 
-    const unsigned stride = (CART_ART_W * bpp / 8 + 3) & ~3U;
-    if (FR_OK != f_lseek(&fd, dataoff))
-      break;
-
+    const unsigned stride = (sw * bpp / 8 + 3) & ~3U;
     ok = true;
-    for (unsigned i = 0; i < CART_ART_H && ok; i++) {
-      // Rows are stored bottom to top unless the height is negative.
-      const unsigned y = h > 0 ? CART_ART_H - 1 - i : i;
-      if (FR_OK != f_read(&fd, row, stride, &rd) || rd != stride) {
+    for (unsigned y = 0; y < win.h && ok; y++) {
+      // Source row (nearest neighbour if the size is different). Rows are stored bottom to
+      // top unless the height is negative.
+      const unsigned sy = y * sh / win.h, frow = h > 0 ? sh - 1 - sy : sy;
+      if (FR_OK != f_lseek(&fd, dataoff + frow * stride) || FR_OK != f_read(&fd, row, stride, &rd) || rd != stride) {
         ok = false;
         break;
       }
-      uint8_t out[CART_ART_W];
-      for (unsigned x = 0; x < CART_ART_W; x++) {
+      uint8_t out[192];     // Wide enough for the widest window (186, checked by cartcv.py)
+      for (unsigned x = 0; x < win.w; x++) {
+        const unsigned sx = x * sw / win.w;
         unsigned r, g, b;
         if (bpp == 8) {
-          const uint32_t c = pal[row[x]];
+          const uint32_t c = pal[row[sx]];
           b = c & 0xFF; g = (c >> 8) & 0xFF; r = (c >> 16) & 0xFF;
         } else {
-          const uint8_t *px = &row[x * (bpp / 8)];
+          const uint8_t *px = &row[sx * (bpp / 8)];
           b = px[0]; g = px[1]; r = px[2];
         }
         // Reduce to the palette. Colors that are in the palette stay as they are.
@@ -174,7 +200,8 @@ bool cart_load_art(const char *path, uint8_t *dst) {
         b = (b * (LVL_B - 1) + th) / 255;
         out[x] = CART_PAL_ART + r + LVL_R * (g + LVL_G * b);
       }
-      dma_memcpy16(&dst[y * CART_ART_W], out, CART_ART_W / 2);
+      // 16-bit writes only: art rows have an even stride.
+      dma_memcpy16(&dst[y * CART_STRIDE(win.w)], out, CART_STRIDE(win.w) / 2);
     }
   } while (0);
 

@@ -1,60 +1,111 @@
 #!/usr/bin/env python3
-# Converts the cartridge picture (res/cartridge.png, 240x160, drawn by the project
-# owner and used unmodified) into a run-length encoded table for the firmware:
-#   src/res/cartridge.h
-# The picture only has 5 colors, each one a class of pixel:
-#   0 transparent, 1 plastic, 2 plastic highlight, 3 plastic shadow (also the
-#   label text), 4 box art window (pure green).
+# Converts the cartridge pictures (res/carts/*.png, 240x160, drawn by the project owner
+# and used unmodified) into one table for the firmware:  src/res/cartridge.h
+#
+# Usage: res/cartcv.py <upkr compressor> <output header> <name:png> ...
+# The order of the pictures is the order of the cartridge types of src/cartridge.h.
+#
+# Each pixel of a picture is one class:
+#   0 transparent, 1 plastic, 2 plastic highlight, 3 plastic shadow (also label text),
+#   4 box art window (pure green, any shade of it), 5 contacts (yellow, fixed color).
+# The art window is the bounding box of the green pixels. The art is a picture of that
+# size (shown through the green pixels, so rounded corners are respected).
+#
 # Rows are a list of runs: one byte (class << 5) | (length - 1) with a length of
-# 1..32 pixels, until 240 pixels are covered. A row equal to the previous one is
-# just the byte 0xFF.
-import sys, PIL.Image
+# 1..32 pixels, until 240 pixels are covered. A row equal to the previous one is just
+# the byte 0xFF. The bytes of each picture are compressed with upkr (the firmware has
+# the depacker already) because EWRAM is nearly full.
+import subprocess, sys, tempfile, os, PIL.Image
 
-CLASSES = {
-  (0, 0, 0, 0): 0,
-  (45, 45, 45, 255): 1,
-  (105, 105, 105, 255): 2,
-  (28, 28, 28, 255): 3,
-  (0, 255, 30, 255): 4,
+PLASTIC, HILITE, SHADOW, ART, PIN = 1, 2, 3, 4, 5
+EXACT = {
+  (45, 45, 45): PLASTIC,
+  (105, 105, 105): HILITE,
+  (28, 28, 28): SHADOW,
+  (251, 242, 54): PIN,
 }
+CLASS_RGB = {PLASTIC: (45, 45, 45), HILITE: (105, 105, 105), SHADOW: (28, 28, 28), PIN: (251, 242, 54)}
 
-im = PIL.Image.open(sys.argv[1]).convert("RGBA")
-assert im.size == (240, 160), im.size
-px = im.load()
+def classify(p):
+  if p[3] == 0:
+    return 0, False
+  rgb = tuple(p[:3])
+  if rgb in EXACT:
+    return EXACT[rgb], False
+  if p[1] >= 250 and p[0] < 70 and p[2] < 70:     # Green of the art window (several shades are used)
+    return ART, False
+  # Anything else (a few shaded pixels of fine details) goes to the closest class.
+  best = min(CLASS_RGB, key=lambda c: sum((a - b) ** 2 for a, b in zip(rgb, CLASS_RGB[c])))
+  return best, True
 
-rows = []
-for y in range(160):
-  rows.append([CLASSES[tuple(px[x, y])] if px[x, y][3] else 0 for x in range(240)])
-  for x in range(240):
-    p = px[x, y]
-    assert p[3] == 0 or tuple(p) in CLASSES, (x, y, p)
+def encode(rows):
+  out = bytearray()
+  prev = None
+  for r in rows:
+    if r == prev:
+      out.append(0xFF)
+      continue
+    prev = r
+    x = 0
+    while x < 240:
+      c = r[x]; n = 1
+      while x + n < 240 and r[x + n] == c and n < 32:
+        n += 1
+      out.append((c << 5) | (n - 1))
+      x += n
+  return bytes(out)
 
-# The art window must be exactly a 150x80 box (corners rounded away).
-win = [(x, y) for y in range(160) for x in range(240) if rows[y][x] == 4]
-x0 = min(p[0] for p in win); x1 = max(p[0] for p in win)
-y0 = min(p[1] for p in win); y1 = max(p[1] for p in win)
-assert (x1 - x0 + 1, y1 - y0 + 1) == (150, 80), (x0, y0, x1, y1)
+def compress(upkr, data):
+  with tempfile.TemporaryDirectory() as d:
+    i, o = os.path.join(d, "i"), os.path.join(d, "o")
+    open(i, "wb").write(data)
+    subprocess.check_call([upkr, "-l", "9", i, o])
+    return open(o, "rb").read()
 
-out = bytearray()
-prev = None
-for r in rows:
-  if r == prev:
-    out.append(0xFF)
-    continue
-  prev = r
-  x = 0
-  while x < 240:
-    c = r[x]; n = 1
-    while x + n < 240 and r[x + n] == c and n < 32:
-      n += 1
-    out.append((c << 5) | (n - 1))
-    x += n
+upkr, outname, pics = sys.argv[1], sys.argv[2], sys.argv[3:]
+blob = bytearray()
+info = []
+for spec in pics:
+  name, path = spec.split(":")
+  im = PIL.Image.open(path).convert("RGBA")
+  assert im.size == (240, 160), (path, im.size)
+  px = im.load()
+  rows, approx = [], 0
+  for y in range(160):
+    row = []
+    for x in range(240):
+      c, a = classify(px[x, y])
+      row.append(c)
+      approx += a
+    rows.append(row)
+  win = [(x, y) for y in range(160) for x in range(240) if rows[y][x] == ART]
+  x0 = min(p[0] for p in win); x1 = max(p[0] for p in win)
+  y0 = min(p[1] for p in win); y1 = max(p[1] for p in win)
+  w, h = x1 - x0 + 1, y1 - y0 + 1
+  assert ((w + 1) & ~1) * h <= 150 * 80 and w <= 192, (path, "art window too big", w, h)
+  rle = encode(rows)
+  assert len(rle) <= 1024, (path, len(rle))
+  comp = compress(upkr, rle)
+  info.append((name, len(blob), len(rle), x0, y0, w, h))
+  blob += comp
+  print("%-4s rle %4d -> %4d  window %3d,%3d %3dx%-3d  approximated pixels: %d" % (name, len(rle), len(comp), x0, y0, w, h, approx))
 
-with open(sys.argv[2], "w") as f:
-  f.write("// Generated by res/cartcv.py from res/cartridge.png. Do not edit.\n")
-  f.write("#define CART_RLE_ART_X %d\n#define CART_RLE_ART_Y %d\n" % (x0, y0))
-  f.write("static const uint8_t cart_rle[%d] = {" % len(out))
-  for i, b in enumerate(out):
-    f.write("%s0x%02x," % ("\n  " if i % 16 == 0 else "", b))
-  f.write("\n};\n")
-print("rle bytes", len(out), "window", x0, y0)
+# Types from CART_BASIC_TYPES on are left out of builds that define CART_FEW_PICS (the SD
+# build is very short of flash space). They use the GBA picture instead.
+BASIC = 4
+with open(outname, "w") as f:
+  f.write("// Generated by res/cartcv.py from res/carts/*.png. Do not edit.\n")
+  f.write("// Cartridge pictures (run length encoded, then upkr compressed) and their art windows.\n")
+  f.write("#ifdef CART_FEW_PICS\n#define CART_TYPES %d\n#else\n#define CART_TYPES %d\n#endif\n" % (BASIC, len(info)))
+  f.write("static const struct { uint16_t off, rle; uint8_t x, y, w, h; } cart_pics[CART_TYPES] = {\n")
+  for i, (name, off, n, x, y, w, h) in enumerate(info):
+    if i == BASIC: f.write("#ifndef CART_FEW_PICS\n")
+    f.write("  { %d, %d, %d, %d, %d, %d },   // %s\n" % (off, n, x, y, w, h, name))
+  f.write("#endif\n};\n")
+  f.write("static const uint8_t cart_pics_data[] = {")
+  cut = info[BASIC][1]
+  for i, b in enumerate(blob):
+    if i == cut: f.write("\n#ifndef CART_FEW_PICS")
+    f.write("%s0x%02x," % ("\n  " if i % 16 == 0 or i == cut else "", b))
+  f.write("\n#endif\n};\n")
+print("total", len(blob), "bytes")

@@ -511,7 +511,8 @@ typedef struct {
   uint8_t scratch[scratch_mem_size];
   t_centry *fileorder[BROWSER_MAXFN_CNT];
   t_centry *filefilter[BROWSER_MAXFN_CNT];
-  uint8_t cartart[CAR_SLOTS][CART_ART_W * CART_ART_H];   // Box art of the nearby entries
+  uint8_t cartart[CAR_SLOTS][CART_ART_MAX];              // Box art of the nearby entries
+  uint8_t cartrle[CAR_SLOTS + 1][CART_RLE_MAX];          // Their cartridge pictures (unpacked), then the default one
   t_centry fentries[BROWSER_MAXFN_CNT];
   t_rentry rentries[RECENT_MAXFN_CNT];
   t_reg_entry_max nordata;
@@ -1607,7 +1608,7 @@ static unsigned entry_icon_kind(const t_centry *e) {
     return ICON_KIND_FOLDER;
   const char *ext = find_extension(e->fname);
   if (ext) {
-    static const char *const gameext[] = { "gba", "gb", "gbc", "nes", "sms" };
+    static const char *const gameext[] = { "gba", "gb", "gbc", "nes", "sms", "gg", "sg", "sv", "ngc", "pce" };
     for (unsigned i = 0; i < sizeof(gameext) / sizeof(gameext[0]); i++)
       if (!strcasecmp(ext, gameext[i]))
         return ICON_KIND_GAME;
@@ -1665,6 +1666,7 @@ static void text_center(volatile uint8_t *frame, const char *t, int cx, int y, u
 typedef struct {
   int idx;                // Entry that the slot holds, or -1
   bool art;               // Has box art
+  uint8_t type;           // Cartridge type (picture and art size)
   uint32_t rgb;           // Plastic color
 } t_cartslot;
 static t_cartslot cartslot[CAR_SLOTS];
@@ -1681,25 +1683,31 @@ static void cart_fill(int idx) {
   t_cartslot *s = &cartslot[idx % CAR_SLOTS];
   s->idx = idx;
   s->art = false;
+  s->type = CART_GBA;
   s->rgb = e->isdir ? CAR_DIR_RGB : CART_DEFAULT_RGB;
-  if (entry_icon_kind(e) != ICON_KIND_GAME)
+  if (entry_icon_kind(e) != ICON_KIND_GAME) {
+    cart_unpack(CART_GBA, sdr_state->cartrle[idx % CAR_SLOTS]);
     return;
+  }
 
   // Name of the ROM without the extension, then the game code if it is a GBA ROM.
   const char *ext = find_extension(e->fname);
+  s->type = cart_type(ext);
+  cart_unpack(s->type, sdr_state->cartrle[idx % CAR_SLOTS]);
+  const t_cartwin win = cart_window(s->type);
   char name[MAX_FN_LEN], path[MAX_FN_LEN + 16], gcode[5];
   strbcpy(name, e->fname, ext - e->fname);
   bool havegc = false;
   uint8_t *art = sdr_state->cartart[idx % CAR_SLOTS];
 
   npf_snprintf(path, sizeof(path), "/ART/%s.bmp", name);
-  s->art = cart_load_art(path, art);
+  s->art = cart_load_art(path, art, win);
   if (!strcasecmp(ext, "gba")) {
     npf_snprintf(path, sizeof(path), "%s%s", smenu.browser.cpath, e->fname);
     havegc = cart_read_gcode(path, gcode);
     if (havegc && !s->art) {
       npf_snprintf(path, sizeof(path), "/ART/%s.bmp", gcode);
-      s->art = cart_load_art(path, art);
+      s->art = cart_load_art(path, art, win);
     }
   }
   cart_find_color(name, havegc ? gcode : NULL, &s->rgb);
@@ -1736,6 +1744,13 @@ static void render_carousel_cart(volatile uint8_t *frame) {
     }
   }
 
+  // The default picture (GBA) is used for the cartridges that are still being looked up.
+  static bool defpic;
+  if (!defpic) {
+    cart_unpack(CART_GBA, sdr_state->cartrle[CAR_SLOTS]);
+    defpic = true;
+  }
+
   // The (up to two) cartridges that are on screen.
   t_cartview views[2];
   int vidx[2];
@@ -1748,16 +1763,26 @@ static void render_carousel_cart(volatile uint8_t *frame) {
     const bool ready = s->idx == i;
     const unsigned pal = CART_PAL_PLASTIC + 3 * nv;
     cart_set_plastic(pal, ready ? s->rgb : CART_DEFAULT_RGB);
-    views[nv] = (t_cartview){ dx, pal, CART_FILL, (ready && s->art) ? sdr_state->cartart[i % CAR_SLOTS] : NULL };
+    views[nv] = (t_cartview){
+      dx, pal, CART_FILL,
+      sdr_state->cartrle[ready ? i % CAR_SLOTS : CAR_SLOTS],
+      cart_window(ready ? s->type : CART_GBA),
+      (ready && s->art) ? sdr_state->cartart[i % CAR_SLOTS] : NULL
+    };
     vidx[nv++] = i;
   }
   cart_render(frame + ui_yshift * SCREEN_WIDTH, views, nv, BG_COLOR);
 
   // Icons in the label window of the cartridges that have no box art.
   for (unsigned i = 0; i < nv; i++) {
-    if (!views[i].art)
-      car_icon(frame, CART_ART_X + CART_ART_W / 2 + views[i].dx, ui_yshift + CART_ART_Y + (CART_ART_H - CAR_ICON_SZ) / 2,
-               CAR_ICON_SZ, entry_icon_kind(sdr_state->filefilter[vidx[i]]));
+    if (!views[i].art) {
+      // The icon is as big as the label window allows (a multiple of 8).
+      const t_cartwin *w = &views[i].win;
+      int sz = w->w < w->h ? w->w : w->h;
+      sz = (sz < CAR_ICON_SZ ? sz : CAR_ICON_SZ) & ~7;
+      car_icon(frame, w->x + w->w / 2 + views[i].dx, ui_yshift + w->y + (w->h - sz) / 2,
+               sz, entry_icon_kind(sdr_state->filefilter[vidx[i]]));
+    }
   }
 
   // Name and position above, what A does and the size below.
