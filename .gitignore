@@ -12,3 +12,5 @@ src/messages_data.h
 
 # Host test build outputs
 tests/*.bin
+lang/
+sdcard/

@@ -164,6 +164,9 @@ static int main_gba() {
   patchmem_dbinfo((uint8_t*)ROM_PATCHDB_U8, &pdbinfo.patch_count, pdbinfo.version, pdbinfo.date, pdbinfo.creator);
   set_supercard_mode(MAPPED_SDRAM, true, true);
 
+  // Load the translation pack of the language of the settings.
+  lang_select(lang_id);
+
   // Configure video mode so we can render the menu.
   setup_video();
 

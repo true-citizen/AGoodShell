@@ -513,6 +513,7 @@ typedef struct {
   t_centry *filefilter[BROWSER_MAXFN_CNT];
   uint8_t cartart[CAR_SLOTS][CART_ART_MAX];              // Box art of the nearby entries
   uint8_t cartrle[CAR_SLOTS + 1][CART_RLE_MAX];          // Their cartridge pictures (unpacked), then the default one
+  uint8_t lang[LANG_PACK_MAX];                           // Translation pack of the current language
   t_centry fentries[BROWSER_MAXFN_CNT];
   t_rentry rentries[RECENT_MAXFN_CNT];
   t_reg_entry_max nordata;
@@ -532,6 +533,48 @@ static bool enable_flashing = false;
 static unsigned framen = 0;
 static unsigned objnum = 0;
 static t_oamobj fobjs[64];
+
+// Translation packs: English is built in. The other languages are files on the SD card
+// (/.superfw/lang/xx.lng, made by res/messages.py) that are read into the SDRAM when the
+// language is selected, so they don't take any space of the (small) EWRAM image.
+// Format: "SFWL", u32 id, u16 count, u16 0, u16 offsets[count], then the nul terminated strings.
+void lang_select(unsigned id) {
+  static const char *tbl[TRANSLATION_COUNT];   // Pointers to the strings of the loaded pack
+  msgs[id] = msg_en;
+  if (!id)
+    return;
+
+  char path[40];
+  npf_snprintf(path, sizeof(path), LANG_PATH "%s.lng", lang_ids[id]);
+  FIL fd;
+  if (FR_OK != f_open(&fd, path, FA_READ))
+    return;
+
+  uint8_t chunk[512] __attribute__((aligned(4)));
+  uint8_t *buf = sdr_state->lang;
+  unsigned total = 0;
+  UINT rd = 0;
+  bool ok = f_size(&fd) >= 12 && f_size(&fd) <= LANG_PACK_MAX;
+  // SDRAM only takes 16 bit writes: read through a buffer.
+  while (ok && total < f_size(&fd)) {
+    ok = FR_OK == f_read(&fd, chunk, sizeof(chunk), &rd) && rd;
+    if (ok) {
+      dma_memcpy16(&buf[total], chunk, (rd + 1) / 2);
+      total += rd;
+    }
+  }
+  f_close(&fd);
+
+  const unsigned count = ok ? buf[8] | (buf[9] << 8) : 0, strs = 12 + 2 * count;
+  ok = ok && !memcmp(buf, "SFWL", 4) && count == TRANSLATION_COUNT && strs < total && !buf[total - 1];
+  for (unsigned i = 0; ok && i < count; i++) {
+    const unsigned off = strs + (buf[12 + 2 * i] | (buf[13 + 2 * i] << 8));
+    ok = off < total;
+    tbl[i] = (const char*)&buf[off];
+  }
+  if (ok)
+    msgs[id] = tbl;
+}
 
 unsigned lang_lookup(uint16_t code) {
   for (unsigned i = 0; i < LANG_COUNT; i++)
@@ -3047,7 +3090,7 @@ void render_ui_settings(volatile uint8_t *frame) {
   draw_text_ovf(msgs[lang_id][MSG_UIS_THEME], frame, 8, y0, 224);
   draw_central_text(tmpbuf, frame, colx, y0);
 
-  npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_LANG_NAME]);
+  npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", lang_names[lang_id]);
   draw_text_ovf(msgs[lang_id][MSG_UIS_LANG], frame, 8, y0 + step, 224);
   draw_central_text(tmpbuf, frame, colx, y0 + step);
 
@@ -4447,7 +4490,7 @@ static void keypress_menu_uisettings(unsigned newkeys) {
     else if (smenu.uiset.selector == UiSetRect)
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
-      lang_id = (lang_id + LANG_COUNT - 1) % LANG_COUNT;
+      lang_id = (lang_id + LANG_COUNT - 1) % LANG_COUNT, lang_select(lang_id);
     else if (smenu.uiset.selector == UiSetAccent)
       accent_color = (accent_color + ACCENT_COUNT - 1) % ACCENT_COUNT;
     else if (smenu.uiset.selector == UiSetCarou)
@@ -4463,7 +4506,7 @@ static void keypress_menu_uisettings(unsigned newkeys) {
     else if (smenu.uiset.selector == UiSetRect)
       recent_menu ^= 1;
     else if (smenu.uiset.selector == UiSetLang)
-      lang_id = (lang_id + 1) % LANG_COUNT;
+      lang_id = (lang_id + 1) % LANG_COUNT, lang_select(lang_id);
     else if (smenu.uiset.selector == UiSetAccent)
       accent_color = (accent_color + 1) % ACCENT_COUNT;
     else if (smenu.uiset.selector == UiSetCarou)

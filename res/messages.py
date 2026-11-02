@@ -320,11 +320,16 @@ if len(sys.argv) > 1 and sys.argv[1] == "json":
         if not v.startswith("~"):
           allentries[k] = v
   print(json.dumps(allentries, indent=2))
-elif len(sys.argv) > 1 and sys.argv[1] == "h":
+elif len(sys.argv) > 1 and sys.argv[1] in ("h", "lng"):
   all_entries = {
     "main": en_strings,
     "menu": en_menu_strings,
   }
+  # "h main|menu" writes the C header, "lng <lang> <file> [DEFINE...]" writes the translation
+  # pack of the main firmware strings for a language (the DEFINEs the firmware is built with
+  # select the conditional strings).
+  genmode = sys.argv[1]
+  which = sys.argv[2] if genmode == "h" else "main"
 
   strlist = {}
   strall = {}
@@ -334,10 +339,37 @@ elif len(sys.argv) > 1 and sys.argv[1] == "h":
     tmp = {}
     for c, entries in smenu:
       for k, v in entries.items():
-        if mname == sys.argv[2]:
+        if mname == which:
           strlist[k] = (v, c)
         tmp[k] = (v, c)
     strall[mname] = tmp
+
+  langdir = os.path.join(os.path.dirname(__file__), "lang")
+
+  def lang_string(l, k, en_v):
+    d = json.load(open(os.path.join(langdir, "%s.json" % l)))
+    if en_v.startswith("~"):
+      mn, mk = en_v[1:].split(".")
+      return d[mk] if mk in d and d[mk] else strall[mn][mk][0]
+    return d[k] if k in d and d[k] else en_v
+
+  if genmode == "lng":
+    import struct, zlib
+    lang, outname, defines = sys.argv[2], sys.argv[3], set(sys.argv[4:])
+    keys = [k for k, (_, c) in sorted(strlist.items()) if not c or c in defines]
+    # Identifies the string set (names and order) so a pack of another build is never used.
+    packid = zlib.crc32(",".join(keys).encode()) & 0xFFFFFFFF
+    d = json.load(open(os.path.join(langdir, "%s.json" % lang)))
+    offs, blob = [], b""
+    for k in keys:
+      en_v, _ = strlist[k]
+      offs.append(len(blob))
+      blob += lang_string(lang, k, en_v).encode("utf-8") + b"\0"
+    assert len(blob) + 4 * len(keys) + 12 <= 16384, "pack too big"
+    data = b"SFWL" + struct.pack("<IHH", packid, len(keys), 0)
+    data += b"".join(struct.pack("<H", o) for o in offs) + blob
+    open(outname, "wb").write(data)
+    sys.exit(0)
 
   print("enum TranslationID {")
   for k, (_, c) in sorted(strlist.items()):
@@ -346,6 +378,7 @@ elif len(sys.argv) > 1 and sys.argv[1] == "h":
     print("  %s," % k)
     if c:
       print("#endif")
+  print("  TRANSLATION_COUNT")
   print("};")
 
   print("const char * const msg_en[] = {")
@@ -361,34 +394,42 @@ elif len(sys.argv) > 1 and sys.argv[1] == "h":
       print("#endif")
   print("};")
 
-  # Attempt to load strings for all other languages
-  langdir = os.path.join(os.path.dirname(__file__), "lang")
-  for l in OTHER_LANGS:
-    d = json.load(open(os.path.join(langdir, "%s.json" % l)))
-    print("const char * const msg_%s[] = {" % l)
-    for k, (en_v, c) in sorted(strlist.items()):
-      if c:
-        print("#ifdef %s" % c)
-      if en_v.startswith("~"):
-        mn, mk = en_v[1:].split(".")
-        v = d[mk] if mk in d and d[mk] else en_v
-      else:
-        v = d[k] if k in d and d[k] else en_v
-      print('  /* %s */ "%s",' % (k.ljust(20), v))
-      if c:
-        print("#endif")
+  if which == "main":
+    # The main firmware only embeds English. The other languages are packs on the SD card
+    # (see "lng" above) and msgs[i] points to a table that is loaded on demand.
+    print("const char * const * msgs[] = {")
+    for l in ["en"] + OTHER_LANGS:
+      print("  msg_en,")
+    print("};")
+    print("const char * const lang_names[] = {")
+    for l in ["en"] + OTHER_LANGS:
+      n = "English" if l == "en" else json.load(open(os.path.join(langdir, "%s.json" % l)))["MSG_LANG_NAME"]
+      print('  "%s",' % n)
+    print("};")
+    print("const char lang_ids[][3] = {")
+    for l in ["en"] + OTHER_LANGS:
+      print('  "%s",' % l)
+    print("};")
+  else:
+    # Attempt to load strings for all other languages
+    for l in OTHER_LANGS:
+      print("const char * const msg_%s[] = {" % l)
+      for k, (en_v, c) in sorted(strlist.items()):
+        if c:
+          print("#ifdef %s" % c)
+        v = lang_string(l, k, en_v)
+        print('  /* %s */ "%s",' % (k.ljust(20), v))
+        if c:
+          print("#endif")
+      print("};")
+    print("const char * const * const msgs[] = {")
+    for l in ["en"] + OTHER_LANGS:
+      print("  msg_%s," % l)
     print("};")
 
-  print("const char * const * const msgs[] = {")
-  for l in ["en"] + OTHER_LANGS:
-    print("  msg_%s," % l)
-  print("};")
-
-  if sys.argv[2] == "main":
+  if which == "main":
     print("const uint16_t lang_codes[] = {")
     for l in ["en"] + OTHER_LANGS:
       c = ord(l[0]) | (ord(l[1]) << 8)
       print("  0x%04x,     // %s" % (c, l))
     print("};")
-
-

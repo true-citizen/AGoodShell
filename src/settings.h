@@ -104,6 +104,9 @@ extern uint32_t rtcvalue_default;
 bool save_ui_settings();
 bool save_settings();
 void load_settings();
+// Makes the (translated) strings of a language available: English is built in, the others are
+// packs on the SD card. Falls back to English when the pack can't be loaded.
+void lang_select(unsigned id);
 
 // ROM-specific setting load/store
 bool load_rom_settings(const char *fn, t_rom_load_settings *rld, t_rom_launch_settings *rlh);

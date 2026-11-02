@@ -36,6 +36,7 @@
 #define PATCHDB_PATH              "/.superfw/patches/"
 #define CHEATS_PATH               "/.superfw/cheats/"
 #define EMULATORS_PATH            "/.superfw/emulators/"
+#define LANG_PATH                 "/.superfw/lang/"
 #define GBC_EMULATOR_PATH         "/.superfw/emulators/gbc-emu.gba"
 #define SETTINGS_FILEPATH         "/.superfw/settings.txt"
 #define RECENT_FILEPATH           "/.superfw/recent.txt"

@@ -15,19 +15,33 @@ GLOBAL_DEFINES = -D__GBA__
 # BOARD can be "sd", "lite", "chis"
 BOARD ?= sd
 
+# Where the firmware runs from. With SDBOOT=1 (the default) the firmware is a file on the SD
+# card (/SFW.GBA) that the small Thumbstart bootloader (see docs/thumbstart.md) loads to the
+# SDRAM and starts, so the size of the flash of the cartridge doesn't limit it: the image can
+# be up to 8 MiB, no feature is left out and all the emulators are bundled, for every board.
+# SDBOOT=0 builds the firmware to be flashed directly, which has to fit the flash of the
+# cart (the SD and Lite builds lose features to fit; discouraged).
+SDBOOT ?= 1
+
 ifeq ($(BOARD),lite)
   GLOBAL_DEFINES += -DSUPERCARD_LITE_IO
   COMPRESS_FIRMWARE = 1
   MAXFSIZE = 496
   FWFLAVOUR = "Lite"
+  ifneq ($(SDBOOT),1)
+    COMPRESSION_RATIO = 9
+  endif
 else ifeq ($(BOARD),sd)
-  GLOBAL_DEFINES += -DSUPERCARD_FLASH_ADDRPERM -DNO_CLASSIC_CAROUSEL -DCART_FEW_PICS
-  BUNDLE_GBC_EMULATOR = 1
+  GLOBAL_DEFINES += -DSUPERCARD_FLASH_ADDRPERM
   COMPRESS_FIRMWARE = 1
   MAXFSIZE = 512
-  # The image is very close to the limit, so spend more time compressing it.
-  COMPRESSION_RATIO = 9
   FWFLAVOUR = "SD"
+  ifneq ($(SDBOOT),1)
+    GLOBAL_DEFINES += -DNO_CLASSIC_CAROUSEL -DCART_FEW_PICS
+    BUNDLE_GBC_EMULATOR = 1
+    # The image is very close to the limit, so spend more time compressing it.
+    COMPRESSION_RATIO = 9
+  endif
 else ifeq ($(BOARD),chis)
   GLOBAL_DEFINES += -DSUPPORT_NORGAMES -DSUPERCHIS_IO -DFONTS_EXT
   BUNDLE_GBC_EMULATOR = 1
@@ -37,6 +51,16 @@ else ifeq ($(BOARD),chis)
   FWFLAVOUR = "Chis"
 else
   $(error No valid board specified in BOARD)
+endif
+
+# Size limit used when linking the image. MAXFSIZE (the flash of the cartridge) is still what
+# the firmware knows as its own maximum size, so it won't try to flash an image that is too big.
+ifeq ($(SDBOOT),1)
+  LINKFSIZE = 8192
+  BUNDLE_GBC_EMULATOR = 1
+  BUNDLE_OTHER_EMULATORS = 1
+else
+  LINKFSIZE = $(MAXFSIZE)
 endif
 
 FWBINFILES=firmware.ewram.gba res/patches.db res/fonts.pack
@@ -167,9 +191,9 @@ INFILES=src/gba_ewram_crt0.S \
         src/fonts/font_render.c \
         ${FATFSFILES}
 
-all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload
+all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload langpacks
 	# Wrap the firmware around a ROM->EWRAM loader
-	$(CC) $(CFLAGS) -o firmware.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(MAXFSIZE)K
+	$(CC) $(CFLAGS) -o firmware.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(LINKFSIZE)K
 	$(OBJCOPY) --output-target=binary firmware.elf superfw.gba
 	# Fix the header/checksum.
 	./tools/fw-fixer.py superfw.gba
@@ -228,8 +252,24 @@ ingame_trampoline.payload:	src/ingame_trampoline.S
 	$(CC) $(BASEFLAGS) -nostartfiles -T ldscripts/gba_ingametramp.ld -o ingame_trampoline.elf src/ingame_trampoline.S
 	$(OBJCOPY) --output-target=binary ingame_trampoline.elf ingame_trampoline.payload
 
-src/messages_data.h:	res/messages.py
+src/messages_data.h:	res/messages.py $(wildcard res/lang/*.json)
 	./res/messages.py h main > src/messages_data.h
+
+# Translation packs (everything but English), to be copied to /.superfw/lang/ on the SD card.
+# They depend on the board, as some strings only exist in some (see SUPPORT_* defines).
+LANGS = es fr it de ca pt cs zh ko uk ru id ms
+LANGDEFS = $(patsubst -D%,%,$(filter -DSUPPORT_%,$(GLOBAL_DEFINES)))
+lang/%.lng:	res/messages.py res/lang/%.json
+	@mkdir -p lang
+	./res/messages.py lng $* $@ $(LANGDEFS)
+langpacks:	$(addprefix lang/,$(addsuffix .lng,$(LANGS)))
+
+# Everything that goes to the root of the SD card, laid out like it (for the SDBOOT=1 setup).
+sdcard:	all
+	rm -rf sdcard
+	mkdir -p sdcard/.superfw/lang
+	cp superfw.gba sdcard/SFW.GBA
+	cp lang/*.lng sdcard/.superfw/lang/
 
 src/menu_messages.h:	res/messages.py
 	./res/messages.py h menu > src/menu_messages.h
@@ -256,5 +296,5 @@ upkr.elf:	tools/upkr.cc
 	g++ -o $@ $< -O3 -ffast-math
 
 clean:
-	rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp *.comp src/menu_messages.h src/messages_data.h
+	rm -rf lang sdcard; rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp *.comp src/menu_messages.h src/messages_data.h
 

@@ -35,12 +35,17 @@ art and DSi-style UI are included, so the recommended setup is split in two:
     the cartridge's flash. It is only a few KB.
  2. Copy the firmware to the **root of the SD card** with the name `sfw.gba`
     (`SFW.GBA`). Thumbstart loads it from there on every boot (chain-loading).
+    `make BOARD=<chis|sd|lite> sdcard` builds everything and lays it out in an
+    `sdcard/` folder that you can copy to the card as it is. It contains `SFW.GBA`
+    and the translations (`.superfw/lang/*.lng`, one file per language; without
+    them the menu is in English).
 
 Flash Thumbstart the same way you would flash any other firmware (see below:
 from the Info tab of a running SuperFW/SCFW, or using an NDS). After that,
 updating is just replacing `sfw.gba` on the SD card, no flashing needed. This
-also removes the flash size limit, so all features (including both carousel
-styles) fit.
+also removes the flash size limit: all builds have all features (both carousel
+styles, all cartridge pictures, all emulators) whatever the cartridge. See
+docs/sd-boot.md.
 
 Note: the Thumbstart path has had little testing on real hardware, so keep an
 NDS and a Slot-1 cart around to restore a working firmware if needed.
@@ -50,7 +55,7 @@ NDS and a Slot-1 cart around to restore a working firmware if needed.
 Flashing the full firmware (.fw) straight into the cartridge is still possible
 but **discouraged**: the image must fit in the flash (the SD and Lite builds
 have features trimmed for that, e.g. the DSi carousel is not available on the
-SD build), every update needs a new flash, and an interrupted flash can brick
+SD build; build it with `make SDBOOT=0`), every update needs a new flash, and an interrupted flash can brick
 the cart.
 
 The firmware can be chain-loaded using another firmware (ie. the default
