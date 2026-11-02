@@ -230,6 +230,30 @@ const t_emu_loader pce_loaders[] = {
   { NULL, NULL },
 };
 
+// MP3 player (mp3/player.c): a standalone ROM that finds this header right after itself.
+typedef struct {
+  char magic[4];
+  uint32_t size;
+  char title[32];
+} t_mp3_header;
+
+unsigned mp3_header(uint8_t *buffer, const char *fn, unsigned fs) {
+  t_mp3_header hdr;
+  memset(&hdr, 0, sizeof(hdr));
+  memcpy(hdr.magic, "AMP3", 4);
+  hdr.size = fs;
+  const char *bname = file_basename(fn);
+  memcpy(hdr.title, bname, sizeof(hdr.title) - 1);
+  memcpy32(buffer, &hdr, sizeof(hdr));
+  return sizeof(hdr);
+}
+
+const t_emu_loader mp3_loaders[] = {
+  { "mp3player", mp3_header },
+  { "vfs:MP3P", mp3_header },
+  { NULL, NULL },
+};
+
 const t_emu_loader gbc_loaders[] = {
   { "gbc-emu", NULL },
   { "vfs:GCEM", NULL },
@@ -248,6 +272,7 @@ const t_emu_platform emu_platforms[] = {
   {"sv",  sv_loaders},
   {"ngc", ngc_loaders},
   {"pce", pce_loaders},
+  {"mp3", mp3_loaders},
   {NULL, NULL},        // End marker!
 };
 

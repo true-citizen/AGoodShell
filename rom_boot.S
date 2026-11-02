@@ -771,6 +771,15 @@ assets_start:
   .balign 4
   #endif
 
+  #ifdef BUNDLE_MP3_PLAYER
+  .ascii "MP3P"
+  .word (mp3p_emu_end - mp3p_emu_start)
+  mp3p_emu_start:
+    .incbin "emu/mp3player.gba.comp"
+  mp3p_emu_end:
+  .balign 4
+  #endif
+
   .word 0               @ End of asset list
   .word 0
 assets_end:

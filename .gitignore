@@ -14,3 +14,6 @@ src/messages_data.h
 tests/*.bin
 lang/
 sdcard/
+
+obj-mp3/
+emu/mp3player.gba.bin

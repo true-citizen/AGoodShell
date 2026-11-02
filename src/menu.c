@@ -1651,7 +1651,7 @@ static unsigned entry_icon_kind(const t_centry *e) {
     return ICON_KIND_FOLDER;
   const char *ext = find_extension(e->fname);
   if (ext) {
-    static const char *const gameext[] = { "gba", "gb", "gbc", "nes", "sms", "gg", "sg", "sv", "ngc", "pce" };
+    static const char *const gameext[] = { "gba", "gb", "gbc", "nes", "sms", "gg", "sg", "sv", "ngc", "pce", "mp3" };
     for (unsigned i = 0; i < sizeof(gameext) / sizeof(gameext[0]); i++)
       if (!strcasecmp(ext, gameext[i]))
         return ICON_KIND_GAME;
