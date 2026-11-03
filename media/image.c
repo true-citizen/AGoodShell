@@ -128,12 +128,12 @@ void image_run(const t_media_header *h) {
     REG16(0x04000000) = 0x0403;
     theme_init(h);
     bg_paint(0, 0, 240, 160);
-    text(8, 8, "Cannot show picture", C_WARN);
+    text(28, 0, "Cannot show picture", C_WARN);
     char name[33];
     memcpy(name, h->title, 32); name[32] = 0;
-    text(8, 32, name, C_FG);
-    text(8, 56, err, C_DIM);
-    text(8, 144, "B:Exit", C_DIM);
+    text(28, 20, name, C_FG);
+    text(28, 44, err, C_DIM);
+    text(28, 140, "B:Exit", C_DIM);
   }
   for (;;) {                                  // Done (or an animation that ended): B leaves
     vsync();

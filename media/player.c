@@ -60,14 +60,15 @@ void theme_init(const t_media_header *h) {
   C_WARN = h->dark ? RGB(30, 12, 10) : RGB(26, 6, 4);
 }
 
-// The background of the firmware's home tab: a 48x48 tile grid (lines at x = 24 + 48k and
-// y = 16 + 48k) on rows that alternate between two close colors.
+// The background of the firmware menu: a 24x24 tile grid (lines at x = 24k and y = 16 + 24k)
+// on rows that alternate between two close colors. Elements are placed on this grid (text and
+// bars sit 4 pixels inside their tile).
 void bg_paint(int x0, int y0, int x1, int y1) {
   for (int y = y0; y < y1; y++) {
-    const bool odd = y & 1, hline = ((y - 16 + 48) % 48) == 0;
+    const bool odd = y & 1, hline = ((y - 16 + 24) % 24) == 0;
     const uint16_t bg = odd ? th_slbg : th_bg, ln = odd ? th_slgrid : th_grid;
-    unsigned xm = (x0 + 24) % 48;                        // Column in the tile (no divisions in the loop: this runs while music plays)
-    for (int x = x0; x < x1; x++, xm = xm == 47 ? 0 : xm + 1)
+    unsigned xm = x0 % 24;                        // Column in the tile (no divisions in the loop: this runs while music plays)
+    for (int x = x0; x < x1; x++, xm = xm == 23 ? 0 : xm + 1)
       VRAM[y * 240 + x] = (hline || xm == 0) ? ln : bg;
   }
 }
@@ -234,28 +235,39 @@ void exit_player(void) {
 // Main
 // ---------------------------------------------------------------------------
 
+// A bar with a vertical gradient (light on top) and a darker outline, like the firmware's info bar.
+static void gbar(int x0, int y0, int x1, int y1, uint16_t top, uint16_t bottom, uint16_t line) {
+  const int h = y1 - y0 - 2;
+  for (int y = y0; y < y1; y++) {
+    const bool edge = y == y0 || y == y1 - 1;
+    const uint16_t col = mix15(top, bottom, ((y - y0 - 1) * 256) / (h > 1 ? h - 1 : 1) );
+    for (int x = x0; x < x1; x++)
+      VRAM[y * 240 + x] = (edge || x == x0 || x == x1 - 1) ? line : col;
+  }
+}
+
 static void draw_static(const t_media_header *h) {
   theme_init(h);
   REG16(0x04000000) = 0x0403;                  // Mode 3, BG2
   bg_paint(0, 0, 240, 160);
-  text(8, 8, "MP3 player", C_ACC);
+  text(28, 0, "MP3 player", C_ACC);            // In the strip above the grid
   char name[33];
   memcpy(name, h->title, 32);
   name[32] = 0;
-  text(8, 32, name, C_FG);
-  text(8, 144, "A:Pause  B:Exit  <>:Seek  ^v:Vol", C_DIM);
+  text(28, 20, name, C_FG);                    // Row 1
+  text(28, 140, "A:Pause  B:Exit  <>:Seek  ^v:Vol", C_DIM);   // Row 5
 }
 
 static void draw_status(bool paused) {
   char buf[40], *p;
-  bg_paint(8, 56, 232, 100);
+  bg_paint(0, 40, 240, 112);                   // Rows 2 to 4
   p = buf;
   p = put_uint(p, src_rate / 1000, 0); *p++ = '.'; p = put_uint(p, (src_rate % 1000) / 100, 0);
   *p++ = 'k'; *p++ = 'H'; *p++ = 'z'; *p++ = ' ';
   *p++ = src_ch == 2 ? 'S' : 'M'; *p++ = ' ';
   p = put_uint(p, kbps, 0); *p++ = 'k'; *p++ = 'b'; *p++ = 'p'; *p++ = 's';
   *p = 0;
-  text(8, 56, buf, C_DIM);
+  text(28, 44, buf, C_DIM);
 
   const unsigned sec = out_samples / OUT_RATE;
   p = buf;
@@ -263,24 +275,25 @@ static void draw_status(bool paused) {
   *p++ = ' '; *p++ = ' ';
   *p++ = 'V'; p = put_uint(p, vol, 0);
   *p = 0;
-  text(8, 76, buf, C_FG);
-  text(120, 76, paused ? "PAUSED" : done ? "FINISHED" : "PLAYING", paused ? C_WARN : C_ACC);
+  text(28, 68, buf, C_FG);
+  text(148, 68, paused ? "PAUSED" : done ? "FINISHED" : "PLAYING", paused ? C_WARN : C_ACC);
 
-  // Progress (bytes read)
+  // Progress (bytes read): from grid line 1 to line 9, 16 pixels tall in row 3
   const unsigned consumed = (stream.this_frame ? (unsigned)(stream.this_frame - mp3_data) : mp3_pos);
-  const unsigned w = (unsigned)(((uint64_t)consumed * 224) / mp3_size);
-  rect(8, 104, 232, 112, C_DIM);
-  rect(8, 104, 8 + (w > 224 ? 224 : w), 112, C_ACC);
+  const unsigned w = (unsigned)(((uint64_t)consumed * 190) / mp3_size);
+  gbar(24, 92, 216, 108, mix15(th_bg, C_FG, 40), mix15(th_bg, C_FG, 120), C_DIM);
+  if (w > 0)
+    gbar(25, 93, 25 + (w > 190 ? 190 : w) + 1, 107, mix15(C_ACC, 0x7FFF, 100), mix15(C_ACC, 0, 60), mix15(C_ACC, 0, 130));
 }
 
 static void draw_load(unsigned load, unsigned ur) {
   char buf[40], *p = buf;
-  bg_paint(8, 118, 232, 134);
+  bg_paint(0, 112, 240, 136);
   *p++ = 'C'; *p++ = 'P'; *p++ = 'U'; *p++ = ' ';
   p = put_uint(p, load, 0); *p++ = '%'; *p++ = ' ';
   *p++ = 'u'; *p++ = 'n'; *p++ = 'd'; *p++ = 'e'; *p++ = 'r'; *p++ = ':'; *p++ = ' ';
   p = put_uint(p, ur, 0); *p = 0;
-  text(8, 118, buf, load > 90 || ur ? C_WARN : C_DIM);
+  text(28, 116, buf, load > 90 || ur ? C_WARN : C_DIM);
 }
 
 int main(void) {
@@ -291,7 +304,7 @@ int main(void) {
     image_main(h);                             // Never returns
   if (memcmp(h->magic, "AMP3", 4) || h->size < 128) {
     draw_static(h);
-    text(8, 60, "No MP3 data!", C_WARN);
+    text(28, 44, "No MP3 data!", C_WARN);
     for (;;) halt();
   }
 
