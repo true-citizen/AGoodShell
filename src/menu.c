@@ -92,11 +92,14 @@ enum {
 #define FT_COLOR         18
 #define HI_COLOR         19
 #define ACC_COLOR        20      // Accent color (home screen selection)
+#define BAR_H            16      // Info bar height (the last row is a line)
 #define BAR_C0           21      // Info bar gradient (top to bottom), then the bottom line
 #define BAR_C1           22
 #define BAR_C2           23
 #define BAR_C3           24
 #define BAR_LN           25
+#define BAR_GRAD_N       (BAR_H - 1)    // One shade for each row of the info bar: the first 4 are BAR_C0..C3,
+#define BAR_G4           226     // the others are 226 and up (after the box art palette of the cartridge view)
 #define BAR_TX           26      // Info bar text (white or black, depending on the accent)
 #define BAR_GREEN        27
 #define BAR_ORANGE       28
@@ -2455,7 +2458,6 @@ static void home_icon_time(volatile uint8_t *frame, int cx, int cy) {
 // few filler icons, over a gradient of the accent color with dashed
 // separators. Time and date take just the room they need.
 // ---------------------------------------------------------------------------
-#define BAR_H        16
 #define BAR_ICONS_X  185        // Filler icons start here (separator just before)
 
 static void bar_text(volatile uint8_t *frame, const char *t, int x) {
@@ -2493,10 +2495,14 @@ static int bar_pages(int *count) {
   }
 }
 
+// Palette index of the shade of row i of the info bar.
+static uint8_t bar_shade(unsigned i) {
+  return i < 4 ? BAR_C0 + i : BAR_G4 + (i - 4);
+}
+
 static void render_infobar(volatile uint8_t *frame) {
-  static const uint8_t bands[4] = { BAR_C0, BAR_C1, BAR_C2, BAR_C3 };
-  for (unsigned i = 0; i < 4; i++)
-    dma_memset16(&frame[i * 4 * SCREEN_WIDTH], dup8(bands[i]), SCREEN_WIDTH * (i == 3 ? 3 : 4) / 2);
+  for (unsigned i = 0; i < BAR_GRAD_N; i++)
+    dma_memset16(&frame[i * SCREEN_WIDTH], dup8(bar_shade(i)), SCREEN_WIDTH / 2);
   dma_memset16(&frame[(BAR_H - 1) * SCREEN_WIDTH], dup8(BAR_LN), SCREEN_WIDTH / 2);
 
   // Time and date (24h, month/day).
@@ -3219,10 +3225,15 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[ACC_COLOR] = acc;
   const bool dark = thnum == THEME_DARK;
   const int dk = dark ? 150 : 0;       // The dark theme has a darker bar, black grid and darker buttons
-  MEM_PALETTE[BAR_C0] = mix15(mix15(acc, 0x7FFF, 100), 0, dk);
-  MEM_PALETTE[BAR_C1] = mix15(mix15(acc, 0x7FFF, 45), 0, dk);
-  MEM_PALETTE[BAR_C2] = mix15(acc, 0, dk);
-  MEM_PALETTE[BAR_C3] = mix15(mix15(acc, 0, 40), 0, dk);
+  // The info bar: a smooth gradient, a shade for each row (light at the top, the accent
+  // color at 8/15 of the height, a bit darker at the bottom).
+  {
+    const uint16_t top = mix15(acc, 0x7FFF, 100), bot = mix15(acc, 0, 40);
+    for (unsigned i = 0; i < BAR_GRAD_N; i++) {
+      const uint16_t c = i <= 8 ? mix15(top, acc, i * 256 / 8) : mix15(acc, bot, (i - 8) * 256 / (BAR_GRAD_N - 1 - 8));
+      MEM_PALETTE[bar_shade(i)] = mix15(c, 0, dk);
+    }
+  }
   MEM_PALETTE[BAR_LN] = mix15(mix15(acc, 0, 130), 0, dk);
   MEM_PALETTE[BAR_TX] = light ? RGB2GBA(0x101018) : 0x7FFF;
   MEM_PALETTE[BAR_GREEN] = RGB2GBA(0x30d040);
