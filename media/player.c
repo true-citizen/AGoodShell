@@ -62,7 +62,7 @@ void theme_init(const t_media_header *h) {
 
 // The background of the firmware menu: a 24x24 tile grid (lines at x = 24k and y = 16 + 24k)
 // on rows that alternate between two close colors. Elements are placed on this grid (text and
-// bars sit 4 pixels inside their tile).
+// the bar fills a whole row).
 void bg_paint(int x0, int y0, int x1, int y1) {
   for (int y = y0; y < y1; y++) {
     const bool odd = y & 1, hline = ((y - 16 + 24) % 24) == 0;
@@ -278,12 +278,12 @@ static void draw_status(bool paused) {
   text(28, 68, buf, C_FG);
   text(148, 68, paused ? "PAUSED" : done ? "FINISHED" : "PLAYING", paused ? C_WARN : C_ACC);
 
-  // Progress (bytes read): from grid line 1 to line 9, 16 pixels tall in row 3
+  // Progress (bytes read): fills a whole grid row, from line 1 to line 9
   const unsigned consumed = (stream.this_frame ? (unsigned)(stream.this_frame - mp3_data) : mp3_pos);
   const unsigned w = (unsigned)(((uint64_t)consumed * 190) / mp3_size);
-  gbar(24, 92, 216, 108, mix15(th_bg, C_FG, 40), mix15(th_bg, C_FG, 120), C_DIM);
+  gbar(24, 88, 216, 112, mix15(th_bg, C_FG, 40), mix15(th_bg, C_FG, 120), C_DIM);
   if (w > 0)
-    gbar(25, 93, 25 + (w > 190 ? 190 : w) + 1, 107, mix15(C_ACC, 0x7FFF, 100), mix15(C_ACC, 0, 60), mix15(C_ACC, 0, 130));
+    gbar(25, 89, 25 + (w > 190 ? 190 : w) + 1, 111, mix15(C_ACC, 0x7FFF, 100), mix15(C_ACC, 0, 60), mix15(C_ACC, 0, 130));
 }
 
 static void draw_load(unsigned load, unsigned ur) {
