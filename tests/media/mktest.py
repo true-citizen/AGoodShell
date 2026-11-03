@@ -8,7 +8,7 @@ mp3 = open(sys.argv[2], "rb").read()
 size = struct.unpack_from("<I", rom, 0xCC)[0]
 assert size == len(rom), (size, len(rom))
 magic = b"AMP3" if sys.argv[2].lower().endswith(".mp3") else b"AIMG"
-hdr = magic + struct.pack("<I", len(mp3)) + sys.argv[2].split("/")[-1].encode()[:31].ljust(32, b"\0")
+hdr = magic + struct.pack("<I", len(mp3)) + sys.argv[2].split("/")[-1].encode()[:31].ljust(32, b"\0") + struct.pack("<4H", 0x7FFF, 0, 0x6739, 0)    # White theme: bg, font, grid, dark
 out = rom + hdr + mp3
 out += b"\0" * (-len(out) % 4)
 out += b"\0" * max(0, 512 * 1024 - len(out))      # Emulators treat small ROMs as multiboot images

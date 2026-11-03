@@ -126,7 +126,8 @@ void image_run(const t_media_header *h) {
 
   if (err) {
     REG16(0x04000000) = 0x0403;
-    rect(0, 0, 240, 160, C_BG);
+    theme_init(h);
+    bg_paint(0, 0, 240, 160);
     text(8, 8, "Cannot show picture", C_WARN);
     char name[33];
     memcpy(name, h->title, 32); name[32] = 0;

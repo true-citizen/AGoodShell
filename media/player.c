@@ -38,12 +38,56 @@ void rect(int x0, int y0, int x1, int y1, uint16_t c) {
       VRAM[y * 240 + x] = c;
 }
 
+uint16_t C_FG, C_DIM, C_ACC, C_WARN;
+static uint16_t th_bg, th_grid, th_slbg, th_slgrid;
+
+static uint16_t mix15(uint16_t a, uint16_t b, int t) {
+  uint16_t r = 0;
+  for (unsigned sh = 0; sh < 15; sh += 5) {
+    const int ca = (a >> sh) & 31, cb = (b >> sh) & 31;
+    r |= (uint16_t)((ca + (((cb - ca) * t) >> 8)) << sh);
+  }
+  return r;
+}
+
+void theme_init(const t_media_header *h) {
+  th_bg = h->bg; th_grid = h->grid;
+  th_slbg = mix15(h->bg, h->ft, 14);                  // The rows alternate between two close colors (faint scanlines)
+  th_slgrid = mix15(h->grid, h->ft, 14);
+  C_FG = h->ft;
+  C_DIM = mix15(h->bg, h->ft, 140);
+  C_ACC = h->dark ? RGB(6, 26, 8) : RGB(4, 20, 6);
+  C_WARN = h->dark ? RGB(30, 12, 10) : RGB(26, 6, 4);
+}
+
+// The background of the firmware's home tab: a 48x48 tile grid (lines at x = 24 + 48k and
+// y = 16 + 48k) on rows that alternate between two close colors.
+void bg_paint(int x0, int y0, int x1, int y1) {
+  for (int y = y0; y < y1; y++) {
+    const bool odd = y & 1, hline = ((y - 16 + 48) % 48) == 0;
+    const uint16_t bg = odd ? th_slbg : th_bg, ln = odd ? th_slgrid : th_grid;
+    unsigned xm = (x0 + 24) % 48;                        // Column in the tile (no divisions in the loop: this runs while music plays)
+    for (int x = x0; x < x1; x++, xm = xm == 47 ? 0 : xm + 1)
+      VRAM[y * 240 + x] = (hline || xm == 0) ? ln : bg;
+  }
+}
+
+// Text with the proportional advances of the font; only the pixels of the glyphs are drawn.
+unsigned text_width(const char *s) {
+  unsigned w = 0;
+  for (; *s; s++) w += ts_font_w[(*s >= 0x20 && *s < 0x7F) ? *s - 0x20 : '?' - 0x20];
+  return w;
+}
+
 void text(int x, int y, const char *s, uint16_t fg) {
-  for (; *s && x < 232; s++, x += 8) {
-    const uint8_t *g = ts_font[(*s >= 0x20 && *s < 0x7F) ? *s - 0x20 : '?' - 0x20];
+  for (; *s && x < 232; s++) {
+    const unsigned gi = (*s >= 0x20 && *s < 0x7F) ? *s - 0x20 : '?' - 0x20;
+    const uint8_t *g = ts_font[gi];
     for (int r = 0; r < 16; r++)
       for (int b = 0; b < 8; b++)
-        VRAM[(y + r) * 240 + x + b] = (g[r] & (0x80 >> b)) ? fg : C_BG;
+        if (g[r] & (0x80 >> b))
+          VRAM[(y + r) * 240 + x + b] = fg;
+    x += ts_font_w[gi];
   }
 }
 
@@ -191,8 +235,9 @@ void exit_player(void) {
 // ---------------------------------------------------------------------------
 
 static void draw_static(const t_media_header *h) {
+  theme_init(h);
   REG16(0x04000000) = 0x0403;                  // Mode 3, BG2
-  rect(0, 0, 240, 160, C_BG);
+  bg_paint(0, 0, 240, 160);
   text(8, 8, "MP3 player", C_ACC);
   char name[33];
   memcpy(name, h->title, 32);
@@ -203,7 +248,7 @@ static void draw_static(const t_media_header *h) {
 
 static void draw_status(bool paused) {
   char buf[40], *p;
-  rect(8, 56, 232, 100, C_BG);
+  bg_paint(8, 56, 232, 100);
   p = buf;
   p = put_uint(p, src_rate / 1000, 0); *p++ = '.'; p = put_uint(p, (src_rate % 1000) / 100, 0);
   *p++ = 'k'; *p++ = 'H'; *p++ = 'z'; *p++ = ' ';
@@ -230,7 +275,7 @@ static void draw_status(bool paused) {
 
 static void draw_load(unsigned load, unsigned ur) {
   char buf[40], *p = buf;
-  rect(8, 118, 232, 134, C_BG);
+  bg_paint(8, 118, 232, 134);
   *p++ = 'C'; *p++ = 'P'; *p++ = 'U'; *p++ = ' ';
   p = put_uint(p, load, 0); *p++ = '%'; *p++ = ' ';
   *p++ = 'u'; *p++ = 'n'; *p++ = 'd'; *p++ = 'e'; *p++ = 'r'; *p++ = ':'; *p++ = ' ';

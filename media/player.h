@@ -6,18 +6,20 @@
 #define REG32(a) (*(volatile uint32_t*)(a))
 #define VRAM     ((volatile uint16_t*)0x06000000)
 #define RGB(r, g, b) ((r) | ((g) << 5) | ((b) << 10))
-#define C_BG    RGB(2, 2, 6)
-#define C_FG    RGB(28, 28, 31)
-#define C_DIM   RGB(14, 14, 18)
-#define C_ACC   RGB(10, 26, 14)
-#define C_WARN  RGB(31, 10, 6)
 
 // Header the firmware writes after the player ROM (the size of the ROM is in the ROM header)
 typedef struct {
   char magic[4];              // "AMP3" (an .mp3 file follows) or "AIMG" (a .png, .jpg or .gif)
   uint32_t size;              // Size of the file
   char title[32];             // File name
+  uint16_t bg, ft, grid;      // Theme colors of the firmware (RGB555): background, font, grid lines
+  uint16_t dark;              // Dark theme
 } t_media_header;
+
+extern uint16_t C_FG, C_DIM, C_ACC, C_WARN;   // Text colors, from the theme (see theme_init)
+void theme_init(const t_media_header *h);
+void bg_paint(int x0, int y0, int x1, int y1);   // The grid background of the firmware menu
+unsigned text_width(const char *s);
 
 void rect(int x0, int y0, int x1, int y1, uint16_t c);
 void text(int x, int y, const char *s, uint16_t fg);
