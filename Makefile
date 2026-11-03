@@ -92,9 +92,9 @@ ifeq ($(BUNDLE_OTHER_EMULATORS),1)
                 emu/NGPGBA_v0.5.7.gba.comp \
                 emu/pceadvance-v7.5-scptch.gba.comp \
                 emu/smsadvance-v2.5-scptch.gba.comp
-  # The MP3 player rides along with the other emulators (see docs/multimedia.md).
-  GLOBAL_DEFINES += -DBUNDLE_MP3_PLAYER
-  BIEMUFILES += emu/mp3player.gba.comp
+  # The media player (mp3, png, jpg, gif) rides along with the other emulators (see docs/multimedia.md).
+  GLOBAL_DEFINES += -DBUNDLE_MEDIA_PLAYER
+  BIEMUFILES += emu/mediaplayer.gba.comp
 endif
 
 BASEFLAGS=$(GLOBAL_DEFINES) -mcpu=arm7tdmi -mtune=arm7tdmi
@@ -220,27 +220,30 @@ thumbstart.ewram.gba: $(THUMBSTARTFILES) ldscripts/gba_thumbstart.ld.i
 	$(CC) $(CFLAGS) -DTHUMBSTART -o thumbstart.ewram.elf $(THUMBSTARTFILES) -T ldscripts/gba_thumbstart.ld.i -nostartfiles -Wl,-Map=thumbstart.ewram.map -Wl,--print-memory-usage -fno-builtin
 	$(OBJCOPY) --output-target=binary thumbstart.ewram.elf thumbstart.ewram.gba
 
-# MP3 player: a small GBA ROM (see mp3/player.c) that the firmware loads like an emulator for .mp3
-# files. libmad (third_party/libmad) decodes. The hot code is ARM (it uses SMULL), the rest Thumb.
+# Media ROM: a small GBA ROM (see media/) that the firmware loads like an emulator for .mp3 files
+# (libmad, third_party/libmad) and for .png/.jpg/.gif files (media/image.c, png.c, gif.c and
+# picojpeg in third_party/picojpeg). The hot decoder code is ARM (libmad uses SMULL), the rest Thumb.
 MADDIR = third_party/libmad
 MADFILES = bit fixed frame huffman layer3 stream synth timer
-MP3FLAGS = -O2 -mcpu=arm7tdmi -mtune=arm7tdmi -mthumb-interwork -ffunction-sections -fno-builtin -w \
-           -DFPM_ARM -DOPT_SPEED -DOPT_SSO -DASO_IMDCT -DASO_ZEROCHECK -DNDEBUG -I$(MADDIR) -Isrc -Imp3
-mp3player.gba:	mp3/player.c mp3/irq.c mp3/stubs.c mp3/crt0.S mp3/mp3.ld mp3/player.h src/thumbstart_font.h \
-		$(addprefix $(MADDIR)/,$(addsuffix .c,$(MADFILES))) $(MADDIR)/imdct_l_arm.S
-	rm -rf obj-mp3; mkdir -p obj-mp3
-	for f in $(MADFILES); do $(CC) $(MP3FLAGS) -marm -c $(MADDIR)/$$f.c -o obj-mp3/$$f.o || exit 1; done
-	$(CC) $(MP3FLAGS) -marm -c mp3/irq.c -o obj-mp3/irq.o
-	$(CC) $(MP3FLAGS) -mthumb -c mp3/player.c -o obj-mp3/player.o
-	$(CC) $(MP3FLAGS) -mthumb -c mp3/stubs.c -o obj-mp3/stubs.o
-	$(CC) $(BASEFLAGS) -mcpu=arm7tdmi -marm -Isrc -I. -c $(MADDIR)/imdct_l_arm.S -o obj-mp3/imdct_l_arm.o
-	$(CC) -mcpu=arm7tdmi -c mp3/crt0.S -o obj-mp3/crt0.o
-	$(CC) -nostartfiles -nostdlib -T mp3/mp3.ld obj-mp3/*.o -lgcc -o mp3player.elf -Wl,-Map=mp3player.map
-	$(OBJCOPY) --output-target=binary mp3player.elf mp3player.gba
-	./tools/fw-fixer.py mp3player.gba
+PJPGDIR = third_party/picojpeg
+MEDIAFLAGS = -O2 -mcpu=arm7tdmi -mtune=arm7tdmi -mthumb-interwork -ffunction-sections -fno-builtin -w \
+           -DFPM_ARM -DOPT_SPEED -DOPT_SSO -DASO_IMDCT -DASO_ZEROCHECK -DNDEBUG -I$(MADDIR) -Isrc -Imedia
+MEDIASRC = media/player.c media/irq.c media/stubs.c media/image.c media/png.c media/gif.c media/jpg.c
+mediaplayer.gba:	$(MEDIASRC) media/crt0.S media/media.ld media/player.h media/image.h src/thumbstart_font.h \
+		$(addprefix $(MADDIR)/,$(addsuffix .c,$(MADFILES))) $(MADDIR)/imdct_l_arm.S $(PJPGDIR)/picojpeg.c
+	rm -rf obj-media; mkdir -p obj-media
+	for f in $(MADFILES); do $(CC) $(MEDIAFLAGS) -marm -c $(MADDIR)/$$f.c -o obj-media/$$f.o || exit 1; done
+	$(CC) $(MEDIAFLAGS) -marm -c media/irq.c -o obj-media/irq.o
+	for f in player stubs image png gif jpg; do $(CC) $(MEDIAFLAGS) -mthumb -c media/$$f.c -o obj-media/m_$$f.o || exit 1; done
+	$(CC) $(MEDIAFLAGS) -mthumb -c $(PJPGDIR)/picojpeg.c -o obj-media/picojpeg.o
+	$(CC) $(BASEFLAGS) -mcpu=arm7tdmi -marm -Isrc -I. -c $(MADDIR)/imdct_l_arm.S -o obj-media/imdct_l_arm.o
+	$(CC) -mcpu=arm7tdmi -c media/crt0.S -o obj-media/crt0.o
+	$(CC) -nostartfiles -nostdlib -T media/media.ld obj-media/*.o -lgcc -o mediaplayer.elf -Wl,-Map=mediaplayer.map
+	$(OBJCOPY) --output-target=binary mediaplayer.elf mediaplayer.gba
+	./tools/fw-fixer.py mediaplayer.gba
 
-emu/mp3player.gba.bin:	mp3player.gba
-	cp mp3player.gba $@
+emu/mediaplayer.gba.bin:	mediaplayer.gba
+	cp mediaplayer.gba $@
 
 thumbstart.ewram.gba.comp: thumbstart.ewram.gba ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@

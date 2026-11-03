@@ -15,21 +15,13 @@
 #include "mad.h"
 #include "player.h"
 #include "../src/thumbstart_font.h"
+#include "image.h"
 
-#define REG16(a) (*(volatile uint16_t*)(a))
-#define REG32(a) (*(volatile uint32_t*)(a))
-#define VRAM     ((volatile uint16_t*)0x06000000)
 
-// Header the firmware writes after the player ROM (the size of the ROM is in the header)
-typedef struct {
-  char magic[4];              // "AMP3"
-  uint32_t size;              // Size of the .mp3 file
-  char title[32];             // File name
-} t_mp3_header;
 
 // SuperCard mapping register (see src/supercard_driver.c): the magic value twice, then the mode.
 // This runs from the EWRAM, the ROM area is going to change.
-static void write_supercard_mode(uint16_t value) {
+void write_supercard_mode(uint16_t value) {
   __asm__ volatile (
     "strh %1, [%0]\n strh %1, [%0]\n strh %2, [%0]\n strh %2, [%0]\n"
     :: "l"(0x09FFFFFE), "l"(0xA55A), "l"(value) : "memory");
@@ -39,20 +31,14 @@ static void write_supercard_mode(uint16_t value) {
 // Display (mode 3, text with the 8x16 font of the Thumbstart loader)
 // ---------------------------------------------------------------------------
 
-#define RGB(r, g, b) ((r) | ((g) << 5) | ((b) << 10))
-#define C_BG    RGB(2, 2, 6)
-#define C_FG    RGB(28, 28, 31)
-#define C_DIM   RGB(14, 14, 18)
-#define C_ACC   RGB(10, 26, 14)
-#define C_WARN  RGB(31, 10, 6)
 
-static void rect(int x0, int y0, int x1, int y1, uint16_t c) {
+void rect(int x0, int y0, int x1, int y1, uint16_t c) {
   for (int y = y0; y < y1; y++)
     for (int x = x0; x < x1; x++)
       VRAM[y * 240 + x] = c;
 }
 
-static void text(int x, int y, const char *s, uint16_t fg) {
+void text(int x, int y, const char *s, uint16_t fg) {
   for (; *s && x < 232; s++, x += 8) {
     const uint8_t *g = ts_font[(*s >= 0x20 && *s < 0x7F) ? *s - 0x20 : '?' - 0x20];
     for (int r = 0; r < 16; r++)
@@ -61,7 +47,7 @@ static void text(int x, int y, const char *s, uint16_t fg) {
   }
 }
 
-static char *put_uint(char *d, unsigned v, unsigned pad) {
+char *put_uint(char *d, unsigned v, unsigned pad) {
   char tmp[12];
   unsigned n = 0;
   do { tmp[n++] = '0' + v % 10; v /= 10; } while (v);
@@ -131,8 +117,8 @@ static bool decode_frame(void) {
   if (synth.pcm.samplerate != src_rate) {                 // First frame (or a change of rate)
     src_rate = synth.pcm.samplerate;
     rs_step = (uint32_t)(((uint64_t)src_rate << 16) / OUT_RATE);
-    kbps = frame.header.bitrate / 1000;
   }
+  kbps = frame.header.bitrate / 1000;                  // Follows every frame (the first one can be a Xing/Info tag)
   src_ch = synth.pcm.channels;
   const unsigned n = synth.pcm.length;
   for (unsigned i = 0; i < n; i++) {
@@ -189,10 +175,10 @@ static void irq_init(void) {
   REG16(0x04000208) = 1;
 }
 
-static void halt(void) { __asm__ volatile("swi 0x02" ::: "r0", "r1", "r2", "r3", "memory"); }
+void halt(void) { __asm__ volatile("swi 0x02" ::: "r0", "r1", "r2", "r3", "memory"); }
 
 // Back to the firmware (map the flash again and reset through the BIOS).
-static void exit_player(void) {
+void exit_player(void) {
   REG16(0x04000208) = 0;
   REG16(0x04000084) = 0;
   write_supercard_mode(0);                     // Flash mapped, read only, no SD interface
@@ -204,7 +190,7 @@ static void exit_player(void) {
 // Main
 // ---------------------------------------------------------------------------
 
-static void draw_static(const t_mp3_header *h) {
+static void draw_static(const t_media_header *h) {
   REG16(0x04000000) = 0x0403;                  // Mode 3, BG2
   rect(0, 0, 240, 160, C_BG);
   text(8, 8, "MP3 player", C_ACC);
@@ -254,8 +240,10 @@ static void draw_load(unsigned load, unsigned ur) {
 
 int main(void) {
   const uint32_t romsize = REG32(0x080000CC);
-  const t_mp3_header *h = (const t_mp3_header*)(0x08000000 + romsize);
+  const t_media_header *h = (const t_media_header*)(0x08000000 + romsize);
   REG16(0x04000000) = 0x0080;                  // Forced blank while we set things up
+  if (!memcmp(h->magic, "AIMG", 4))
+    image_main(h);                             // Never returns
   if (memcmp(h->magic, "AMP3", 4) || h->size < 128) {
     draw_static(h);
     text(8, 60, "No MP3 data!", C_WARN);

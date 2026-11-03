@@ -24,6 +24,15 @@ SECTIONS {
   } > IWRAM AT> ROM
   __iw_lma = LOADADDR(.iwram);
 
+  /* The picture viewer's hot code (inflate, the JPEG decoder, the output) takes the place of the
+     MP3 decoder in the IWRAM: image_main() copies it there, the two are never used together. */
+  .iwram_img ORIGIN(IWRAM) : ALIGN(4) {
+    __iwi_start = .;
+    *picojpeg.o(.text*) *m_png.o(.text*) *m_jpg.o(.text*) *m_image.o(.text*)
+    __iwi_end = .;
+  } AT> ROM
+  __iwi_lma = LOADADDR(.iwram_img);
+
   .ewram : ALIGN(4) {
     __ew_start = .;
     *(.text*) *(.glue*) *(.data*) *(.ewram*)

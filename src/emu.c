@@ -230,17 +230,18 @@ const t_emu_loader pce_loaders[] = {
   { NULL, NULL },
 };
 
-// MP3 player (mp3/player.c): a standalone ROM that finds this header right after itself.
+// Media player (media/): a standalone ROM that finds this header right after itself, then the
+// file. It plays .mp3 files and shows .png, .jpg and .gif pictures.
 typedef struct {
   char magic[4];
   uint32_t size;
   char title[32];
-} t_mp3_header;
+} t_media_header;
 
-unsigned mp3_header(uint8_t *buffer, const char *fn, unsigned fs) {
-  t_mp3_header hdr;
+static unsigned media_header(uint8_t *buffer, const char *fn, unsigned fs, const char *magic) {
+  t_media_header hdr;
   memset(&hdr, 0, sizeof(hdr));
-  memcpy(hdr.magic, "AMP3", 4);
+  memcpy(hdr.magic, magic, 4);
   hdr.size = fs;
   const char *bname = file_basename(fn);
   memcpy(hdr.title, bname, sizeof(hdr.title) - 1);
@@ -248,9 +249,18 @@ unsigned mp3_header(uint8_t *buffer, const char *fn, unsigned fs) {
   return sizeof(hdr);
 }
 
+unsigned mp3_header(uint8_t *buffer, const char *fn, unsigned fs) { return media_header(buffer, fn, fs, "AMP3"); }
+unsigned img_header(uint8_t *buffer, const char *fn, unsigned fs) { return media_header(buffer, fn, fs, "AIMG"); }
+
 const t_emu_loader mp3_loaders[] = {
-  { "mp3player", mp3_header },
-  { "vfs:MP3P", mp3_header },
+  { "mediaplayer", mp3_header },
+  { "vfs:MEDI", mp3_header },
+  { NULL, NULL },
+};
+
+const t_emu_loader img_loaders[] = {
+  { "mediaplayer", img_header },
+  { "vfs:MEDI", img_header },
   { NULL, NULL },
 };
 
@@ -273,6 +283,10 @@ const t_emu_platform emu_platforms[] = {
   {"ngc", ngc_loaders},
   {"pce", pce_loaders},
   {"mp3", mp3_loaders},
+  {"png", img_loaders},
+  {"jpg", img_loaders},
+  {"jpeg", img_loaders},
+  {"gif", img_loaders},
   {NULL, NULL},        // End marker!
 };
 

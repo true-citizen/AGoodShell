@@ -15,5 +15,5 @@ tests/*.bin
 lang/
 sdcard/
 
-obj-mp3/
-emu/mp3player.gba.bin
+obj-media/
+emu/mediaplayer.gba.bin
