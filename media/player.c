@@ -14,7 +14,7 @@
 
 #include "mad.h"
 #include "player.h"
-#include "../src/thumbstart_font.h"
+#include "media_font.h"
 #include "image.h"
 
 

@@ -38,6 +38,8 @@ Pictures that fit the screen are shown 1:1, bigger ones are scaled down to fit (
 | JPEG | baseline (picojpeg: gray, 4:4:4, 4:2:2, 4:2:0) | progressive, arithmetic coding |
 | GIF | animation for pictures up to 240x160 (integer zoom when smaller), transparency, interlace | animation of bigger pictures (first frame only); "restore previous" disposal is treated as "leave" |
 
+The on-screen text uses Galmuri9 (SIL OFL 1.1, see res/fonts/OFL-Galmuri.txt), like the firmware menu.
+
 Speed (mGBA, hot code in IWRAM): about 25 s for a 1000x700 PNG and about 30 s per megapixel of
 JPEG. JPEGs at least 8 times bigger than the screen are decoded at 1/8 size (one pixel per 8x8
 block), which is much faster (a 3200x2100 photo takes about 20 s). picojpeg is public domain.

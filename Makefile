@@ -229,7 +229,7 @@ PJPGDIR = third_party/picojpeg
 MEDIAFLAGS = -O2 -mcpu=arm7tdmi -mtune=arm7tdmi -mthumb-interwork -ffunction-sections -fno-builtin -w \
            -DFPM_ARM -DOPT_SPEED -DOPT_SSO -DASO_IMDCT -DASO_ZEROCHECK -DNDEBUG -I$(MADDIR) -Isrc -Imedia
 MEDIASRC = media/player.c media/irq.c media/stubs.c media/image.c media/png.c media/gif.c media/jpg.c
-mediaplayer.gba:	$(MEDIASRC) media/crt0.S media/media.ld media/player.h media/image.h src/thumbstart_font.h \
+mediaplayer.gba:	$(MEDIASRC) media/crt0.S media/media.ld media/player.h media/image.h media/media_font.h \
 		$(addprefix $(MADDIR)/,$(addsuffix .c,$(MADFILES))) $(MADDIR)/imdct_l_arm.S $(PJPGDIR)/picojpeg.c
 	rm -rf obj-media; mkdir -p obj-media
 	for f in $(MADFILES); do $(CC) $(MEDIAFLAGS) -marm -c $(MADDIR)/$$f.c -o obj-media/$$f.o || exit 1; done
