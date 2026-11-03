@@ -14,3 +14,5 @@ src/messages_data.h
 tests/*.bin
 lang/
 sdcard/
+res/splash.raw
+res/splash.pal

@@ -277,38 +277,21 @@ _main_end:
   @ Clear the screen to zero (background color)
   mov r0, $0x8
   swi 0x10000
-  @ Copy palette
-  adr r0, boot_logo_pal
+  @ Copy the palette of the splash screen (12 colors)
+  ldr r0, =splash_pal
   mov r1, $0x05000000
-  ldm r0, {r2-r5}
-  stm r1, {r2-r5}
-  @ Render the logo, scaled by 4 byte-word.
-  adr r0, boot_logo
-  ldr r1, =(0x06000000 + (GBA_SWIDTH-31*4)/2 + ((GBA_SHEIGHT-7*4)/2) * GBA_SWIDTH)
-  mov r3, $7
-  1:
-    mov r2, $16
-    2:
-      ldrb r4, [r0], #1    @ Copy to 4 columns
-      mov r5, r4, lsr #4
-      orr r5, r5, lsl #8
-      orr r5, r5, lsl #16
-      str r5, [r1, #720]   @ Copy to four rows
-      str r5, [r1, #480]
-      str r5, [r1, #240]
-      str r5, [r1], #4
-      and r5, r4, $0xF
-      orr r5, r5, lsl #8
-      orr r5, r5, lsl #16
-      str r5, [r1, #720]   @ Copy to four rows
-      str r5, [r1, #480]
-      str r5, [r1, #240]
-      str r5, [r1], #4
-      subs r2, $1
-      bne 2b
-    add r1, $(GBA_SWIDTH-32*4 + GBA_SWIDTH*3)
-    subs r3, $1
-    bne 1b
+  ldm r0, {r2-r7}
+  stm r1, {r2-r7}
+  @ Unpack the picture (8 bit indexed, 240x160) to EWRAM, then copy it to the screen.
+  @ upkr_unpack keeps all the registers but r0 and r1. (EWRAM is free for now, the
+  @ firmware gets unpacked there later.)
+  mov r0, $0x02000000
+  ldr r1, =splash_data
+  bl upkr_unpack
+  mov r0, $0x02000000
+  mov r1, $0x06000000
+  mov r2, $((GBA_SWIDTH * GBA_SHEIGHT) / 4)
+  swi 0x0C0000                         @ CpuFastSet (the size is a multiple of 8 words)
 
   @ Setup BG2 regs, ensure it has some sensible state
   ldr r0, =REG_BG2CNT
@@ -692,6 +675,14 @@ arm9_bootaddr_itcm:
 .pool
 
 _end_bootloader:
+
+@ Splash screen of the GBA boot (see res/splashcv.py): palette, then the compressed picture.
+.balign 4
+splash_pal:
+  .incbin "res/splash.pal"
+splash_data:
+  .incbin "res/splash.raw.comp"
+.balign 4
 
 @ apack compressed assets!
 payload_ewram:

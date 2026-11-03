@@ -64,6 +64,7 @@ else
 endif
 
 FWBINFILES=firmware.ewram.gba res/patches.db res/fonts.pack
+SPLASHFILES=res/splash.raw.comp res/splash.pal      # Boot splash screen, included by rom_boot.S
 
 ifeq ($(ENABLE_DISK_LOGGING),1)
   PAYLOADFLAGS += -DENABLE_DISK_LOGGING
@@ -191,7 +192,7 @@ INFILES=src/gba_ewram_crt0.S \
         src/fonts/font_render.c \
         ${FATFSFILES}
 
-all:	$(FWBINFILES) $(BIEMUFILES) directsave.payload ingame_trampoline.payload langpacks
+all:	$(FWBINFILES) $(BIEMUFILES) $(SPLASHFILES) directsave.payload ingame_trampoline.payload langpacks
 	# Wrap the firmware around a ROM->EWRAM loader
 	$(CC) $(CFLAGS) -o firmware.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(LINKFSIZE)K
 	$(OBJCOPY) --output-target=binary firmware.elf superfw.gba
@@ -220,7 +221,7 @@ thumbstart.ewram.gba: $(THUMBSTARTFILES) ldscripts/gba_thumbstart.ld.i
 thumbstart.ewram.gba.comp: thumbstart.ewram.gba ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
 
-thumbstart.gba: thumbstart.ewram.gba.comp
+thumbstart.gba: thumbstart.ewram.gba.comp $(SPLASHFILES)
 	# Wrap it around the same ROM->EWRAM loader as the firmware (no fonts, patches or assets)
 	$(CC) $(CFLAGS) -DTHUMBSTART -DCOMPRESS_FIRMWARE -DFIRMWARE_PAYLOAD='"thumbstart.ewram.gba"' -DFIRMWARE_PAYLOAD_COMP='"thumbstart.ewram.gba.comp"' -o thumbstart.elf rom_boot.S -T ldscripts/gba_romboot.ld -nostartfiles -nostdlib -Wl,--defsym,MAX_FLASH_SIZE=$(MAXFSIZE)K
 	$(OBJCOPY) --output-target=binary thumbstart.elf thumbstart.gba
@@ -274,6 +275,13 @@ sdcard:	all
 src/menu_messages.h:	res/messages.py
 	./res/messages.py h menu > src/menu_messages.h
 
+# Boot splash screen (see res/splashcv.py), included by rom_boot.S
+res/splash.raw res/splash.pal:	res/splash.png res/splashcv.py
+	./res/splashcv.py res/splash.png res/splash.raw res/splash.pal
+
+res/splash.raw.comp:	res/splash.raw ./upkr.elf
+	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
+
 firmware.ewram.gba.comp:	firmware.ewram.gba ./upkr.elf
 	./upkr.elf -l $(COMPRESSION_RATIO) $< $@
 
@@ -296,5 +304,5 @@ upkr.elf:	tools/upkr.cc
 	g++ -o $@ $< -O3 -ffast-math
 
 clean:
-	rm -rf lang sdcard; rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp emu/*.comp *.comp src/menu_messages.h src/messages_data.h
+	rm -rf lang sdcard; rm -f ldscripts/*.i *.gba *.elf *.payload *.map res/*.comp res/splash.raw res/splash.pal emu/*.comp *.comp src/menu_messages.h src/messages_data.h
 
