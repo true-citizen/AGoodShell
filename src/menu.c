@@ -123,6 +123,9 @@ enum {
 #define CAL_TODAY        48      // Calendar current day: lighter accent fill, dotted frame, dark text
 #define CAL_TODAYLN      49
 #define CAL_TODAYTX      50
+#define BOT_BASE         51      // Bottom bar of the settings pages: BOT_N shades, top to bottom
+#define BOT_N            12
+#define SEL_ROW          63      // Selected row of the settings pages (tint of the accent color)
 #define GRID_COLOR       44      // Background grid lines (black in the dark theme)
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
@@ -1510,73 +1513,6 @@ static void draw_central_text_wrapped(const char *t, volatile uint8_t *frame, un
   }
 }
 
-void render_recent(volatile uint8_t *frame) {
-  // Render the list from memory.
-  for (unsigned i = 0; i < RECENT_ROWS; i++) {
-    if (smenu.recent.seloff + i >= smenu.recent.maxentries)
-      break;
-
-    t_rentry *e = &sdr_state->rentries[smenu.recent.seloff + i];
-    char *fn = &e->fpath[e->fname_offset];
-    render_icon(2, (i+1)*16, guessicon(fn));
-
-    // Animate the row entries if they are too long!
-    if (i == smenu.recent.selector - smenu.recent.seloff)
-      draw_text_ovf_rotate(fn, frame, 20, (1 + i) * 16,
-                           SCREEN_WIDTH - 24, &smenu.anim_state);
-    else
-      draw_text_ovf(fn, frame, 20, (1 + i) * 16, SCREEN_WIDTH - 24);
-  }
-
-  for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, (smenu.recent.selector - smenu.recent.seloff + 1)*16, 63);
-}
-
-#ifdef SUPPORT_NORGAMES
-void render_flashbrowser(volatile uint8_t *frame) {
-  // Render bar below to show block info (the tab is drawn 16 rows up, no info bar)
-  dma_memset16(&frame[240*160], dup8(FG_COLOR), 240*16/2);
-
-  // Render the list from memory.
-  if (!smenu.fbrowser.maxentries)
-    draw_central_text(msgs[lang_id][MSG_NOR_EMPTY], frame, SCREEN_WIDTH/2, SCREEN_HEIGHT/2-8);
-  else {
-    for (unsigned i = 0; i < NORGAMES_ROWS; i++) {
-      if (smenu.fbrowser.seloff + i >= smenu.fbrowser.maxentries)
-        break;
-
-      const t_flash_game_entry *e = &sdr_state->nordata.games[smenu.fbrowser.seloff + i];
-      render_icon(2, (i+1)*16, ICON_GBACART);
-
-      // Animate the row entries if they are too long!
-      char szstr[16];
-      human_size(szstr, sizeof(szstr), e->numblks * NOR_BLOCK_SIZE);
-      draw_rightj_text(szstr, frame, SCREEN_WIDTH - 2, (1 + i) * 16);
-
-      // Animate the row entries if they are too long!
-      const char *romname = &e->game_name[e->bnoffset];
-      if (i == smenu.fbrowser.selector - smenu.fbrowser.seloff)
-        draw_text_ovf_rotate(romname, frame, 20, (1 + i) * 16,
-                             SCREEN_WIDTH - 26 - font_width(szstr), &smenu.anim_state);
-      else
-        draw_text_ovf(romname, frame, 20, (1 + i) * 16, SCREEN_WIDTH - 26 - font_width(szstr));
-    }
-
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, (smenu.fbrowser.selector - smenu.fbrowser.seloff + 1)*16, 63);
-  }
-
-  char tmp[32], tmp1[32], tmp2[32];
-  npf_snprintf(tmp, sizeof(tmp), "%u/%d", smenu.fbrowser.selector + 1, smenu.fbrowser.maxentries);
-  draw_rightj_text(tmp, frame, SCREEN_WIDTH - 1, 160);
-
-  human_size(tmp1, sizeof(tmp1), smenu.fbrowser.usedblks * NOR_BLOCK_SIZE);
-  human_size(tmp2, sizeof(tmp2), NOR_GAMEBLOCK_COUNT * NOR_BLOCK_SIZE);
-  npf_snprintf(tmp, sizeof(tmp), "Flash usage: %s/%s", tmp1, tmp2);
-  draw_text_ovf(tmp, frame, 8, 160, SCREEN_WIDTH - 56);
-}
-#endif
-
 // ---------------------------------------------------------------------------
 // DS-style views
 //
@@ -1588,6 +1524,7 @@ void render_flashbrowser(volatile uint8_t *frame) {
 // ---------------------------------------------------------------------------
 
 static unsigned render_fcnt;     // Frames elapsed since the previous render
+static int *car_selp(void);
 static int car_pos;              // Scroll position in 1/256 of an entry
 
 // Fills the horizontal span [x0, x1) of row y. VRAM only accepts 16 bit writes
@@ -1636,7 +1573,7 @@ static void car_outline(volatile uint8_t *frame, int x0, int y0, int x1, int y1,
 // Moves the scroll position towards the selected entry. Takes a fraction of
 // the remaining distance each frame and snaps once it is close enough.
 static void car_ease() {
-  const int dest = smenu.browser.selector << 8;
+  const int dest = *car_selp() << 8;
   unsigned frames = render_fcnt > 8 ? 8 : render_fcnt;
   while (frames--) {
     const int diff = dest - car_pos;
@@ -1654,10 +1591,96 @@ static int car_xof(int i, int pitch) {
 // generic file and a game (any ROM the menu can launch).
 enum { ICON_KIND_FOLDER, ICON_KIND_FILE, ICON_KIND_GAME };
 
-static unsigned entry_icon_kind(const t_centry *e) {
+// What the carousel shows: the current directory of the browser, the recent
+// games list or the games in the internal flash. All of them look the same.
+enum { CARSRC_BROWSER, CARSRC_RECENT, CARSRC_FLASH };
+static unsigned car_src;
+
+typedef struct {
+  const char *name;       // File name to show
+  const char *path;       // Full path of an SD card file (recent games), if known
+  uint32_t size;
+  bool isdir, hassize, nor;
+} t_cview;
+
+static int car_count(void) {
+  switch (car_src) {
+  case CARSRC_RECENT: return smenu.recent.maxentries;
+  #ifdef SUPPORT_NORGAMES
+  case CARSRC_FLASH:  return smenu.fbrowser.maxentries;
+  #endif
+  default:            return smenu.browser.dispentries;
+  }
+}
+
+static int *car_selp(void) {
+  switch (car_src) {
+  case CARSRC_RECENT: return &smenu.recent.selector;
+  #ifdef SUPPORT_NORGAMES
+  case CARSRC_FLASH:  return &smenu.fbrowser.selector;
+  #endif
+  default:            return &smenu.browser.selector;
+  }
+}
+
+static void car_entry(int i, t_cview *v) {
+  memset(v, 0, sizeof(*v));
+  switch (car_src) {
+  case CARSRC_RECENT: {
+    const t_rentry *e = &sdr_state->rentries[i];
+    v->name = &e->fpath[e->fname_offset];
+    #ifdef SUPPORT_NORGAMES
+    v->nor = e->flags & FLAG_RECENT_NOR;
+    #endif
+    v->path = v->nor ? NULL : e->fpath;
+    break; }
+  #ifdef SUPPORT_NORGAMES
+  case CARSRC_FLASH: {
+    const t_flash_game_entry *e = &sdr_state->nordata.games[i];
+    v->name = &e->game_name[e->bnoffset];
+    v->size = e->numblks * NOR_BLOCK_SIZE;
+    v->hassize = true;
+    v->nor = true;
+    break; }
+  #endif
+  default: {
+    const t_centry *e = sdr_state->filefilter[i];
+    v->name = e->fname;
+    v->size = e->filesize;
+    v->hassize = !e->isdir;
+    v->isdir = e->isdir;
+    break; }
+  }
+}
+
+static const char *car_empty_msg(void) {
+  #ifdef SUPPORT_NORGAMES
+  if (car_src == CARSRC_FLASH)
+    return msgs[lang_id][MSG_NOR_EMPTY];
+  #endif
+  return msgs[lang_id][MSG_BROW_EMPTY];
+}
+
+// Second line of the speech bubble: the directory, or what the list is.
+static void car_where(char *out, unsigned n) {
+  switch (car_src) {
+  case CARSRC_RECENT: strbcpy(out, "Recent games", n); break;
+  case CARSRC_FLASH: {
+    char a[16], b[16];
+    human_size(a, sizeof(a), smenu.fbrowser.usedblks * NOR_BLOCK_SIZE);
+    human_size(b, sizeof(b), NOR_GAMEBLOCK_COUNT * NOR_BLOCK_SIZE);
+    npf_snprintf(out, n, "Flash %s/%s", a, b);
+    break; }
+  default: strbcpy(out, smenu.browser.cpath, n); break;
+  }
+}
+
+static unsigned entry_icon_kind(const t_cview *e) {
   if (e->isdir)
     return ICON_KIND_FOLDER;
-  const char *ext = find_extension(e->fname);
+  if (e->nor)
+    return ICON_KIND_GAME;
+  const char *ext = find_extension(e->name);
   if (ext) {
     static const char *const gameext[] = { "gba", "gb", "gbc", "nes", "sms", "gg", "sg", "sv", "ngc", "pce" };
     for (unsigned i = 0; i < sizeof(gameext) / sizeof(gameext[0]); i++)
@@ -1730,7 +1753,9 @@ static void cart_flush() {
 // Looks for the box art and the plastic color of an entry. This reads files from
 // the SD card, so it is done for one entry at a time, once the scrolling stops.
 static void cart_fill(int idx) {
-  const t_centry *e = sdr_state->filefilter[idx];
+  t_cview ev;
+  car_entry(idx, &ev);
+  const t_cview *e = &ev;
   t_cartslot *s = &cartslot[idx % CAR_SLOTS];
   s->idx = idx;
   s->art = false;
@@ -1742,19 +1767,23 @@ static void cart_fill(int idx) {
   }
 
   // Name of the ROM without the extension, then the game code if it is a GBA ROM.
-  const char *ext = find_extension(e->fname);
-  s->type = cart_type(ext);
+  const char *ext = find_extension(e->name);
+  const char *gext = ext ? ext : "gba";
+  s->type = cart_type(gext);
   cart_unpack(s->type, sdr_state->cartrle[idx % CAR_SLOTS]);
   const t_cartwin win = cart_window(s->type);
   char name[MAX_FN_LEN], path[MAX_FN_LEN + 16], gcode[5];
-  strbcpy(name, e->fname, ext - e->fname);
+  strbcpy(name, e->name, ext ? (unsigned)(ext - e->name) : strlen(e->name) + 1);
   bool havegc = false;
   uint8_t *art = sdr_state->cartart[idx % CAR_SLOTS];
 
   npf_snprintf(path, sizeof(path), "/ART/%s.bmp", name);
   s->art = cart_load_art(path, art, win);
-  if (!strcasecmp(ext, "gba")) {
-    npf_snprintf(path, sizeof(path), "%s%s", smenu.browser.cpath, e->fname);
+  if (!e->nor && ext && !strcasecmp(ext, "gba")) {
+    if (e->path)
+      strbcpy(path, e->path, sizeof(path));
+    else
+      npf_snprintf(path, sizeof(path), "%s%s", smenu.browser.cpath, e->name);
     havegc = cart_read_gcode(path, gcode);
     if (havegc && !s->art) {
       npf_snprintf(path, sizeof(path), "/ART/%s.bmp", gcode);
@@ -1773,12 +1802,12 @@ static void car_tri(volatile uint8_t *frame, int x, int y, bool left) {
 }
 
 static void render_carousel_cart(volatile uint8_t *frame) {
-  const int n = smenu.browser.dispentries, sel = smenu.browser.selector;
+  const int n = car_count(), sel = *car_selp();
   const int cx = SCREEN_WIDTH / 2;
   car_ease();
 
   if (!n) {
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, CAR_NAME_Y + 66);
+    draw_central_text(car_empty_msg(), frame, cx, CAR_NAME_Y + 66);
     return;
   }
 
@@ -1828,26 +1857,32 @@ static void render_carousel_cart(volatile uint8_t *frame) {
   for (unsigned i = 0; i < nv; i++) {
     if (!views[i].art) {
       // The icon is as big as the label window allows (a multiple of 8).
+      t_cview iv;
+      car_entry(vidx[i], &iv);
       const t_cartwin *w = &views[i].win;
       int sz = w->w < w->h ? w->w : w->h;
       sz = (sz < CAR_ICON_SZ ? sz : CAR_ICON_SZ) & ~7;
       car_icon(frame, w->x + w->w / 2 + views[i].dx, ui_yshift + w->y + (w->h - sz) / 2,
-               sz, entry_icon_kind(sdr_state->filefilter[vidx[i]]));
+               sz, entry_icon_kind(&iv));
     }
   }
 
   // Name and position above, what A does and the size below.
-  const t_centry *e = sdr_state->filefilter[sel];
+  t_cview ev;
+  car_entry(sel, &ev);
+  const t_cview *e = &ev;
   char info[32], cnt[16];
   if (e->isdir) {
     strcpy(info, "OPEN");
-  } else {
+  } else if (e->hassize) {
     char szstr[16] = {0};
-    human_size(szstr, sizeof(szstr), e->filesize);
+    human_size(szstr, sizeof(szstr), e->size);
     npf_snprintf(info, sizeof(info), "START  %s", szstr);
+  } else {
+    strcpy(info, "START");
   }
   npf_snprintf(cnt, sizeof(cnt), "%d/%d", sel + 1, n);
-  draw_central_text_ovf(e->fname, frame, cx, CAR_NAME_Y, 164);
+  draw_central_text_ovf(e->name, frame, cx, CAR_NAME_Y, 164);
   draw_rightj_text(cnt, frame, SCREEN_WIDTH - 4, CAR_NAME_Y);
   draw_central_text(info, frame, cx, CAR_INFO_Y);
   if (sel > 0)
@@ -1902,7 +1937,7 @@ static void car_arrow(volatile uint8_t *frame, int x0, bool left, bool enabled) 
 }
 
 static void render_carousel_classic(volatile uint8_t *frame) {
-  const int n = smenu.browser.dispentries;
+  const int n = car_count();
   const int cx = SCREEN_WIDTH / 2;
   car_ease();
 
@@ -1919,22 +1954,27 @@ static void render_carousel_classic(volatile uint8_t *frame) {
   }
 
   if (!n) {
-    draw_central_text(msgs[lang_id][MSG_BROW_EMPTY], frame, cx, CAR_BUB_Y + 14);
+    draw_central_text(car_empty_msg(), frame, cx, CAR_BUB_Y + 14);
   } else {
     // Name and, below it, the size and the current directory. Entry counter at the right.
-    const t_centry *e = sdr_state->filefilter[smenu.browser.selector];
-    char info[MAX_FN_LEN + 16];
+    t_cview ev;
+    car_entry(*car_selp(), &ev);
+    const t_cview *e = &ev;
+    char info[MAX_FN_LEN + 16], where[MAX_FN_LEN];
+    car_where(where, sizeof(where));
     if (e->isdir) {
-      npf_snprintf(info, sizeof(info), "Folder  %s", smenu.browser.cpath);
-    } else {
+      npf_snprintf(info, sizeof(info), "Folder  %s", where);
+    } else if (e->hassize) {
       char szstr[16] = {0};
-      human_size(szstr, sizeof(szstr), e->filesize);
-      npf_snprintf(info, sizeof(info), "%s  %s", szstr, smenu.browser.cpath);
+      human_size(szstr, sizeof(szstr), e->size);
+      npf_snprintf(info, sizeof(info), "%s  %s", szstr, where);
+    } else {
+      strbcpy(info, where, sizeof(info));
     }
-    draw_central_text_ovf(e->fname, frame, cx, CAR_BUB_Y + 4, 150);
+    draw_central_text_ovf(e->name, frame, cx, CAR_BUB_Y + 4, 150);
     draw_central_text_ovf(info, frame, cx, CAR_BUB_Y + 22, SCREEN_WIDTH - 32);
     char cnt[16];
-    npf_snprintf(cnt, sizeof(cnt), "%d/%d", smenu.browser.selector + 1, n);
+    npf_snprintf(cnt, sizeof(cnt), "%d/%d", *car_selp() + 1, n);
     draw_rightj_text(cnt, frame, SCREEN_WIDTH - 14, CAR_BUB_Y + 4);
   }
 
@@ -1950,15 +1990,18 @@ static void render_carousel_classic(volatile uint8_t *frame) {
     for (int i = first; i <= last; i++) {
       const int bx = car_xof(i, CAR_PITCH);
       car_plate(frame, bx, CAR_PLATE_Y);
-      car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(sdr_state->filefilter[i]));
+      t_cview iv;
+      car_entry(i, &iv);
+      car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(&iv));
     }
-    text_center(frame, sdr_state->filefilter[smenu.browser.selector]->isdir ? "OPEN" : "START",
-                cx, CAR_PLATE_Y + CAR_BOX_H - 2, BAR_WHITE);
+    t_cview sv;
+    car_entry(*car_selp(), &sv);
+    text_center(frame, sv.isdir ? "OPEN" : "START", cx, CAR_PLATE_Y + CAR_BOX_H - 2, BAR_WHITE);
   }
 
   // Scroll bar: arrow buttons, a track of dots and the thumb, all square and
   // touching each other along the bottom of the screen.
-  const int sel = smenu.browser.selector;
+  const int sel = *car_selp();
   car_arrow(frame, 0, true, n && sel > 0);
   car_arrow(frame, SCREEN_WIDTH - 16, false, n && sel < n - 1);
   ds_rrect(frame, CAR_TRK_X0, CAR_BAR_Y, CAR_TRK_X1, CAR_BAR_Y + CAR_BAR_H, 0, PL_EDGE, 1);
@@ -1982,8 +2025,14 @@ static void render_carousel_classic(volatile uint8_t *frame) {
 
 #endif
 
-// The carousel of the browser tab, in the style chosen in the UI settings.
-void render_carousel(volatile uint8_t *frame) {
+// The carousel, in the style chosen in the UI settings, for one of the sources.
+static void render_carousel_src(volatile uint8_t *frame, unsigned src) {
+  if (car_src != src) {
+    // Another list: forget the cartridges looked up and jump to its selection.
+    car_src = src;
+    cart_flush();
+    car_pos = *car_selp() << 8;
+  }
   #ifndef NO_CLASSIC_CAROUSEL
   if (carousel_classic)
     render_carousel_classic(frame);
@@ -1991,6 +2040,21 @@ void render_carousel(volatile uint8_t *frame) {
   #endif
     render_carousel_cart(frame);
 }
+
+// The ROM browser tab.
+void render_carousel(volatile uint8_t *frame) {
+  render_carousel_src(frame, CARSRC_BROWSER);
+}
+
+void render_recent(volatile uint8_t *frame) {
+  render_carousel_src(frame, CARSRC_RECENT);
+}
+
+#ifdef SUPPORT_NORGAMES
+void render_flashbrowser(volatile uint8_t *frame) {
+  render_carousel_src(frame, CARSRC_FLASH);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Clock and calendar (top screen of the DS menus).
@@ -2948,235 +3012,238 @@ void render_rtcpop(volatile uint8_t *frame) {
   draw_central_text("⯆", frame, cox[spop.rtcpop.selector], 84);
 }
 
+// ---------------------------------------------------------------------------
+// Settings pages, laid out like the TWiLight Menu++ settings: a title that says
+// what the page is about, a dotted line, the rows (selection highlighted, scroll
+// bar on the right), a help line and, at the bottom, a gradient bar with the L/R
+// hints and the name of the firmware. Rows are in screen coordinates; sh is the
+// shift of the frame (the tab is drawn some rows up, see ui_yshift).
+// ---------------------------------------------------------------------------
+#define PG_TITLE_Y    1
+#define PG_LINE_Y     19
+#define PG_LIST_Y     22
+#define PG_ROWH       16
+#define PG_ROWS       6
+#define PG_HELP_LINE  120
+#define PG_HELP_Y     123
+#define PG_BAR_Y      144
+#define PG_SCR_X      233
+
+enum { ROW_OPT, ROW_HDR, ROW_BTN };
+typedef struct {
+  const char *label;
+  char val[44];
+  uint8_t kind;
+} t_prow;
+static t_prow prows[SettMAX + 1];
+static unsigned prow_n;
+
+static void prow_add(const char *label, const char *val, uint8_t kind) {
+  t_prow *r = &prows[prow_n++];
+  r->label = label;
+  r->kind = kind;
+  if (val)
+    strbcpy(r->val, val, sizeof(r->val));
+  else
+    r->val[0] = 0;
+}
+
+static void page_dotted(volatile uint8_t *frame, int y, int x0, int x1) {
+  for (int x = x0; x < x1; x += 2)
+    car_span(frame, ui_yshift + y, x, x + 1, BTN_EDGE);
+}
+
+// Title, dotted line and the bottom bar.
+static void page_chrome(volatile uint8_t *frame, const char *title) {
+  const int sh = ui_yshift;
+  draw_text_ovf(title, frame, 8, sh + PG_TITLE_Y, 224);
+  draw_text_ovf(title, frame, 9, sh + PG_TITLE_Y, 224);      // Drawn twice, a bit bolder
+  page_dotted(frame, PG_LINE_Y, 6, SCREEN_WIDTH - 6);
+
+  for (int i = 0; i < SCREEN_HEIGHT - PG_BAR_Y; i++)
+    car_span(frame, sh + PG_BAR_Y + i, 0, SCREEN_WIDTH, BOT_BASE + i * BOT_N / (SCREEN_HEIGHT - PG_BAR_Y));
+  car_span(frame, sh + PG_BAR_Y, 0, SCREEN_WIDTH, BTN_EDGE);
+  draw_text_ovf("< L", frame, 6, sh + PG_BAR_Y + 1, 40);
+  draw_rightj_text("R >", frame, SCREEN_WIDTH - 6, sh + PG_BAR_Y + 1);
+  draw_central_text("AGoodShell++", frame, SCREEN_WIDTH / 2, sh + PG_BAR_Y + 1);
+}
+
+// The rows (prows), the selected one highlighted, with a scroll bar on the right.
+static void page_list(volatile uint8_t *frame, int sel, const char *help) {
+  const int sh = ui_yshift, n = prow_n;
+  const int off = MAX(0, MIN(sel - PG_ROWS / 2, n - PG_ROWS));
+  for (int i = 0; i < PG_ROWS && off + i < n; i++) {
+    const t_prow *r = &prows[off + i];
+    const int y = sh + PG_LIST_Y + i * PG_ROWH;
+    const bool cur = off + i == sel;
+    if (cur) {
+      car_rect(frame, 4, y, PG_SCR_X - 3, y + PG_ROWH, SEL_ROW);
+      car_rect(frame, 4, y, 6, y + PG_ROWH, ACC_COLOR);
+    }
+    if (r->kind == ROW_HDR) {
+      draw_text_ovf(r->label, frame, 10, y, 210);
+      draw_text_ovf(r->label, frame, 11, y, 210);
+      continue;
+    }
+    char val[44];
+    strbcpy(val, r->val, sizeof(val));
+    if (!cur) {
+      // The < > arrows are only shown on the selected row.
+      const unsigned l = strlen(val);
+      if (l > 4 && val[0] == '<' && val[1] == ' ' && val[l - 2] == ' ' && val[l - 1] == '>') {
+        memmove(val, val + 2, l - 4);
+        val[l - 4] = 0;
+      }
+    }
+    const int vw = val[0] ? (int)font_width(val) : 0;
+    if (r->kind == ROW_BTN)
+      draw_central_text(r->label, frame, SCREEN_WIDTH / 2, y);
+    else
+      draw_text_ovf(r->label, frame, 10, y, MAX(24, PG_SCR_X - 18 - vw - 10));
+    if (vw)
+      draw_rightj_text(val, frame, PG_SCR_X - 10, y);
+  }
+
+  // Scroll bar (only when the rows do not fit).
+  if (n > PG_ROWS) {
+    const int th = PG_ROWS * PG_ROWH, top = sh + PG_LIST_Y;
+    car_rect(frame, PG_SCR_X + 2, top, PG_SCR_X + 3, top + th, BTN_EDGE);
+    const int bh = MAX(8, th * PG_ROWS / n);
+    const int by = top + (th - bh) * off / (n - PG_ROWS);
+    car_rect(frame, PG_SCR_X + 1, by, PG_SCR_X + 5, by + bh, FT_COLOR);
+  }
+
+  // Help line
+  page_dotted(frame, PG_HELP_LINE, 6, SCREEN_WIDTH - 6);
+  if (help && help[0])
+    draw_text_ovf_rotate(help, frame, 6, sh + PG_HELP_Y, SCREEN_WIDTH - 12, &smenu.anim_state);
+}
+
 void render_settings(volatile uint8_t *frame) {
   char tmp[128];
-  unsigned baseopt = smenu.set.selector <= 2  ? 0 :
-                     smenu.set.selector >= SettMAX - 3 ? SettMAX - 5 :
-                     smenu.set.selector - 2;
+  prow_n = 0;
+  int sel = smenu.set.selector;
+  if (sel == SettTitle1)
+    sel = SettHotkey;
 
-  if (smenu.set.selector > 2)
-    draw_central_text("⯅", frame, 120, 15);
-  if (smenu.set.selector < SettSave - 2)
-    draw_central_text("⯆", frame, 120, 125);
-
-  const unsigned maxrows = 5;
-  unsigned optnum = 0, optcnt = 0;
-  const unsigned colx = 170;           // Center point for the selection boxes
-  const unsigned offy = 29;
-  const unsigned rowh = 20;
-
-  if (optnum++ >= baseopt && optcnt < maxrows)
-    draw_central_text(msgs[lang_id][MSG_SET_TITL1], frame, SCREEN_WIDTH/2, offy + rowh*optcnt++);
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    npf_snprintf(tmp, sizeof(tmp), "< %s >", hotkey_list[hotkey_combo].cname);
-    draw_text_ovf(msgs[lang_id][MSG_SETT_HOTK], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(tmp, frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_BOOT], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_BOOT_TYPE0 + boot_bios_splash], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_FASTSD], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_slowld ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, offy + rowh*optcnt++);
-  }
-
+  // One row for each entry of the enum, in the same order.
+  prow_add(msgs[lang_id][MSG_SET_TITL1], NULL, ROW_HDR);
+  npf_snprintf(tmp, sizeof(tmp), "< %s >", hotkey_list[hotkey_combo].cname);
+  prow_add(msgs[lang_id][MSG_SETT_HOTK], tmp, ROW_OPT);
+  prow_add(msgs[lang_id][MSG_SETT_BOOT], msgs[lang_id][MSG_BOOT_TYPE0 + boot_bios_splash], ROW_OPT);
+  prow_add(msgs[lang_id][MSG_SETT_FASTSD], msgs[lang_id][use_slowld ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], ROW_OPT);
   #ifdef SUPPORT_NORGAMES
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_VERNOR], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_verify_nor ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
-  }
+  prow_add(msgs[lang_id][MSG_SETT_VERNOR], msgs[lang_id][use_verify_nor ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], ROW_OPT);
   #endif
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_FASTEW], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][use_fastew ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
+  prow_add(msgs[lang_id][MSG_SETT_FASTEW], msgs[lang_id][use_fastew ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], ROW_OPT);
+  if (save_path_default == SaveRomName)
+    prow_add(msgs[lang_id][MSG_SETT_SAVET], msgs[lang_id][MSG_NEXTTO_ROM], ROW_OPT);
+  else {
+    npf_snprintf(tmp, sizeof(tmp), "< %s >", save_paths[save_path_default]);
+    prow_add(msgs[lang_id][MSG_SETT_SAVET], tmp, ROW_OPT);
   }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_SAVET], frame, 8, offy + rowh*optcnt, 224);
-
-    if (save_path_default == SaveRomName)
-      draw_central_text(msgs[lang_id][MSG_NEXTTO_ROM], frame, colx, offy + rowh*optcnt++);
-    else {
-      npf_snprintf(tmp, sizeof(tmp), "< %s >", save_paths[save_path_default]);
-      draw_central_text(tmp, frame, colx, offy + rowh*optcnt++);
-    }
-  }
-
   #ifdef SUPPORT_NORGAMES
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_SAVETX], frame, 8, offy + rowh*optcnt, 224);
-    npf_snprintf(tmp, sizeof(tmp), "< %s >", save_paths[save_path_nor_default]);
-    draw_central_text(tmp, frame, colx, offy + rowh*optcnt++);
-  }
+  npf_snprintf(tmp, sizeof(tmp), "< %s >", save_paths[save_path_nor_default]);
+  prow_add(msgs[lang_id][MSG_SETT_SAVETX], tmp, ROW_OPT);
   #endif
+  npf_snprintf(tmp, sizeof(tmp), "< %u >", backup_sram_default);
+  prow_add(msgs[lang_id][MSG_SETT_SAVEBK], tmp, ROW_OPT);
+  npf_snprintf(tmp, sizeof(tmp), "< %s >", savestates_paths_display[state_path_default]);
+  prow_add(msgs[lang_id][MSG_SETT_STATET], tmp, ROW_OPT);
+  prow_add(msgs[lang_id][MSG_SETT_CHTEN], msgs[lang_id][enable_cheats ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], ROW_OPT);
 
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    npf_snprintf(tmp, sizeof(tmp), "< %u >", backup_sram_default);
-    draw_text_ovf(msgs[lang_id][MSG_SETT_SAVEBK], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(tmp, frame, colx, offy + rowh*optcnt++ );
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_STATET], frame, 8, offy + rowh*optcnt, 224);
-    npf_snprintf(tmp, sizeof(tmp), "< %s >", savestates_paths_display[state_path_default]);
-    draw_central_text(tmp, frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_SETT_CHTEN], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][enable_cheats ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows)
-    draw_central_text(msgs[lang_id][MSG_SET_TITL2], frame, SCREEN_WIDTH/2, offy + rowh*optcnt++);
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_DEFS_PATCH], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_PATCH_TYPE0 + patcher_default], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_LOADER_MENU], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_KNOB_DISABLED + ingamemenu_default], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_LOADER_RTCE], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_KNOB_DISABLED + rtcpatch_default], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
+  prow_add(msgs[lang_id][MSG_SET_TITL2], NULL, ROW_HDR);
+  prow_add(msgs[lang_id][MSG_DEFS_PATCH], msgs[lang_id][MSG_PATCH_TYPE0 + patcher_default], ROW_OPT);
+  prow_add(msgs[lang_id][MSG_LOADER_MENU], msgs[lang_id][MSG_KNOB_DISABLED + ingamemenu_default], ROW_OPT);
+  prow_add(msgs[lang_id][MSG_LOADER_RTCE], msgs[lang_id][MSG_KNOB_DISABLED + rtcpatch_default], ROW_OPT);
+  {
     t_dec_date d;
     timestamp2date(rtcvalue_default, &d);
-    npf_snprintf(tmp, sizeof(tmp), "20%02d/%02d/%02d %02d:%02d",
-      d.year, d.month, d.day, d.hour, d.min);
-    draw_text_ovf(msgs[lang_id][MSG_DEF_RTCVAL], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(tmp, frame, colx, offy + rowh*optcnt++);
+    npf_snprintf(tmp, sizeof(tmp), "20%02d/%02d/%02d %02d:%02d", d.year, d.month, d.day, d.hour, d.min);
+    prow_add(msgs[lang_id][MSG_DEF_RTCVAL], tmp, ROW_OPT);
   }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    unsigned spdmsg = rtcspeed_default ? (MSG_UIS_SPD0 + rtcspeed_default - 1) :
-                                          MSG_STILLRTC;
+  {
+    unsigned spdmsg = rtcspeed_default ? (MSG_UIS_SPD0 + rtcspeed_default - 1) : MSG_STILLRTC;
     npf_snprintf(tmp, sizeof(tmp), "< %s >", msgs[lang_id][spdmsg]);
-    draw_text_ovf(msgs[lang_id][MSG_DEF_SPEED], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(tmp, frame, colx, offy + rowh*optcnt++);
+    prow_add(msgs[lang_id][MSG_DEF_SPEED], tmp, ROW_OPT);
   }
+  prow_add(msgs[lang_id][MSG_LOADER_LOADP], msgs[lang_id][MSG_DEF_LOADP0 + (autoload_default ^ 1)], ROW_OPT);
+  prow_add(msgs[lang_id][MSG_LOADER_SAVEP], msgs[lang_id][autosave_default ? MSG_DEF_SAVEP0 : MSG_DEF_SAVEP1], ROW_OPT);
+  prow_add(msgs[lang_id][MSG_LOADER_PREFDS], msgs[lang_id][autosave_prefer_ds ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], ROW_OPT);
+  prow_add(msgs[lang_id][MSG_UIS_SAVE], NULL, ROW_BTN);
 
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_LOADER_LOADP], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][MSG_DEF_LOADP0 + (autoload_default ^ 1)], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_LOADER_SAVEP], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][autosave_default ? MSG_DEF_SAVEP0 : MSG_DEF_SAVEP1], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_text_ovf(msgs[lang_id][MSG_LOADER_PREFDS], frame, 8, offy + rowh*optcnt, 224);
-    draw_central_text(msgs[lang_id][autosave_prefer_ds ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, offy + rowh*optcnt++);
-  }
-
-  if (optnum++ >= baseopt && optcnt < maxrows) {
-    draw_button_box(frame, 20, 220, 112, 132, smenu.set.selector == SettSave);
-    draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 132, 114);
-  }
-
-  // Render bar below for help messge
-  dma_memset16(&frame[240*148], dup8(FG_COLOR), 240*20/2);
-
-  if (smenu.set.selector == SettSaveLoc) {
+  // Help message of the selected row.
+  const char *help;
+  if (sel == SettSaveLoc) {
     if (save_path_default == SaveRomName)
-      draw_text_ovf_rotate(msgs[lang_id][MSG_SAVE_TYPE_NR], frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
+      help = msgs[lang_id][MSG_SAVE_TYPE_NR];
     else {
       npf_snprintf(tmp, sizeof(tmp), msgs[lang_id][MSG_SAVE_TYPE_PT], save_paths[save_path_default]);
-      draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
+      help = tmp;
     }
   }
-  else if (smenu.set.selector == SettStateLoc) {
+  else if (sel == SettStateLoc) {
     npf_snprintf(tmp, sizeof(tmp), msgs[lang_id][MSG_STATE_TYPE_PT], savestates_paths[state_path_default]);
-    draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
+    help = tmp;
   }
   #ifdef SUPPORT_NORGAMES
-  else if (smenu.set.selector == SettSaveLocNOR) {
+  else if (sel == SettSaveLocNOR) {
     npf_snprintf(tmp, sizeof(tmp), msgs[lang_id][MSG_SAVE_TYPE_PTX], save_paths[save_path_nor_default]);
-    draw_text_ovf_rotate(tmp, frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
+    help = tmp;
   }
   #endif
   else {
-    unsigned help_msg = smenu.set.selector == SettBootType ? MSG_BOOT_TYPE_I0 + boot_bios_splash :
-                        smenu.set.selector == SettSaveBkp  ? MSG_BACKUP_I :
-                        smenu.set.selector == SettFastSD   ? MSG_FASTSD_I :
-                        smenu.set.selector == SettFastEWRAM? MSG_FASTEW_I :
-                        smenu.set.selector == DefsPatchEng ? MSG_PATCH_TYPE_I0 + patcher_default :
-                        smenu.set.selector == DefsLoadPol  ? MSG_DEF_LOADP_I0 + (autoload_default ^ 1) :
-                        smenu.set.selector == DefsSavePol  ? MSG_DEF_SAVEP_I0 + (autosave_default ^ 1) :
-                        smenu.set.selector == DefsPrefDS   ? MSG_LOADER_PREFDSI :
+    unsigned help_msg = sel == SettBootType ? MSG_BOOT_TYPE_I0 + boot_bios_splash :
+                        sel == SettSaveBkp  ? MSG_BACKUP_I :
+                        sel == SettFastSD   ? MSG_FASTSD_I :
+                        sel == SettFastEWRAM? MSG_FASTEW_I :
+                        sel == DefsPatchEng ? MSG_PATCH_TYPE_I0 + patcher_default :
+                        sel == DefsLoadPol  ? MSG_DEF_LOADP_I0 + (autoload_default ^ 1) :
+                        sel == DefsSavePol  ? MSG_DEF_SAVEP_I0 + (autosave_default ^ 1) :
+                        sel == DefsPrefDS   ? MSG_LOADER_PREFDSI :
                         #ifdef SUPPORT_NORGAMES
-                        smenu.set.selector == SettVerifyNOR ? MSG_VERNOR_I :
+                        sel == SettVerifyNOR ? MSG_VERNOR_I :
                         #endif
                         MSG_EMPTY;
-    draw_text_ovf_rotate(msgs[lang_id][help_msg], frame, 4, SCREEN_HEIGHT - 10, 232, &smenu.anim_state);
+    help = msgs[lang_id][help_msg];
   }
 
-  if (smenu.set.selector != SettSave)
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, offy + (smenu.set.selector - baseopt) * 20, 63);
+  page_chrome(frame, "Loader settings");
+  page_list(frame, sel, help);
 }
 
 void render_ui_settings(volatile uint8_t *frame) {
-  const unsigned colx = 170, y0 = 14, step = 15;
   char tmpbuf[64];
+  prow_n = 0;
+
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %u >", menu_theme + 1U);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_THEME], frame, 8, y0, 224);
-  draw_central_text(tmpbuf, frame, colx, y0);
-
+  prow_add(msgs[lang_id][MSG_UIS_THEME], tmpbuf, ROW_OPT);
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", lang_names[lang_id]);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_LANG], frame, 8, y0 + step, 224);
-  draw_central_text(tmpbuf, frame, colx, y0 + step);
-
-  draw_text_ovf(msgs[lang_id][MSG_UIS_RECNT], frame, 8, y0 + step * 2, 224);
-  draw_central_text(msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], frame, colx, y0 + step * 2);
-
+  prow_add(msgs[lang_id][MSG_UIS_LANG], tmpbuf, ROW_OPT);
+  prow_add(msgs[lang_id][MSG_UIS_RECNT], msgs[lang_id][recent_menu ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], ROW_OPT);
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", msgs[lang_id][MSG_UIS_SPD0 + anim_speed]);
-  draw_text_ovf(msgs[lang_id][MSG_UIS_ANSPD], frame, 8, y0 + step * 3, 224);
-  draw_central_text(tmpbuf, frame, colx, y0 + step * 3);
-
-  draw_text_ovf(msgs[lang_id][MSG_UIS_BHID], frame, 8, y0 + step * 4, 224);
-  draw_central_text(msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], frame, colx, y0 + step * 4);
-
+  prow_add(msgs[lang_id][MSG_UIS_ANSPD], tmpbuf, ROW_OPT);
+  prow_add(msgs[lang_id][MSG_UIS_BHID], msgs[lang_id][hide_hidden ? MSG_KNOB_DISABLED : MSG_KNOB_ENABLED], ROW_OPT);
   npf_snprintf(tmpbuf, sizeof(tmpbuf), "< %s >", accents[accent_color % ACCENT_COUNT].name);
-  draw_text_ovf("Accent color", frame, 8, y0 + step * 5, 224);
-  draw_central_text(tmpbuf, frame, colx, y0 + step * 5);
+  prow_add("Accent color", tmpbuf, ROW_OPT);
+  prow_add("Carousel", !CLASSIC_AVAILABLE ? "Cartridge" : carousel_classic ? "< DSi >" : "< Cartridge >", ROW_OPT);
+  prow_add("User name", smenu.uiset.editing ? user_name : (user_name[0] ? user_name : "-"), ROW_OPT);
+  prow_add(msgs[lang_id][MSG_UIS_SAVE], NULL, ROW_BTN);
 
-  draw_text_ovf("Carousel", frame, 8, y0 + step * 6, 224);
-  draw_central_text(!CLASSIC_AVAILABLE ? "Cartridge" : carousel_classic ? "< DSi >" : "< Cartridge >", frame, colx, y0 + step * 6);
+  page_chrome(frame, "UI settings");
+  page_list(frame, smenu.uiset.selector, smenu.uiset.editing ? "UP/DOWN: change letter  LEFT/RIGHT: move  A: done" : "");
 
-  draw_text_ovf("User name", frame, 8, y0 + step * 7, 224);
   if (smenu.uiset.editing) {
-    // Show the whole (padded) name with an underline on the edited character.
-    const int sx = (int)colx - (int)font_width(user_name) / 2;
-    draw_text_idx8_bus16(user_name, (uint8_t*)&frame[(y0 + step * 7) * SCREEN_WIDTH + sx], SCREEN_WIDTH, FT_COLOR);
+    // Underline the edited character of the name (the name is the value of its row).
+    const int sel = smenu.uiset.selector;
+    const int off = MAX(0, MIN(sel - PG_ROWS / 2, (int)prow_n - PG_ROWS));
+    const int y = ui_yshift + PG_LIST_Y + (sel - off) * PG_ROWH;
     char pre[USERNAME_MAX + 1], one[2] = { user_name[smenu.uiset.cursor], 0 };
     memcpy(pre, user_name, smenu.uiset.cursor);
     pre[smenu.uiset.cursor] = 0;
-    const int cx = sx + (int)font_width(pre);
-    car_rect(frame, cx, y0 + step * 7 + 14, cx + (int)font_width(one), y0 + step * 7 + 16, ACC_COLOR);
-  } else {
-    draw_central_text(user_name[0] ? user_name : "-", frame, colx, y0 + step * 7);
+    const int cx = PG_SCR_X - 10 - (int)font_width(user_name) + (int)font_width(pre);
+    car_rect(frame, cx, y + 14, cx + (int)font_width(one), y + 16, ACC_COLOR);
   }
-
-  if (smenu.uiset.selector != UiSetSave)
-    for (unsigned i = 0; i < 240; i += 16)
-      render_icon_trans(i, y0 + smenu.uiset.selector * step, 63);
-
-  draw_button_box(frame, 20, 220, 138, 157, smenu.uiset.selector == UiSetSave);
-  draw_central_text(msgs[lang_id][MSG_UIS_SAVE], frame, 120, 139);
 }
 
 void render_info(volatile uint8_t *frame) {
@@ -3184,60 +3251,64 @@ void render_info(volatile uint8_t *frame) {
   uint32_t vmin = VERSION_WORD & 0xFFFF;
   uint32_t gitver = VERSION_SLUG_WORD;
   char tmp[64], tmp2[32];
+  const int sh = ui_yshift;                    // Rows below are screen rows + sh
+
+  page_chrome(frame, "About");
+  page_dotted(frame, PG_HELP_LINE, 6, SCREEN_WIDTH - 6);
 
   init_logo_palette(&MEM_PALETTE[1]);
-  render_logo((uint16_t*)frame, SCREEN_WIDTH/2, 40, 4);
+  render_logo((uint16_t*)frame, SCREEN_WIDTH/2, sh + 38, 4);
 
+  const int y0 = sh + 56;
   switch (smenu.info.selector) {
   case 0:
     // Title, drawn twice one pixel apart to look bolder.
-    draw_central_text("AGoodShell++", frame, 120, 64);
-    draw_central_text("AGoodShell++", frame, 121, 64);
-    draw_central_text("based on SuperFW by davidgf", frame, 120, 82);
+    draw_central_text("AGoodShell++", frame, 120, y0);
+    draw_central_text("AGoodShell++", frame, 121, y0);
+    draw_central_text("based on SuperFW by davidgf", frame, 120, y0 + 16);
     npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lu (%08lx)", vmaj, vmin, gitver);
-    draw_central_text(tmp, frame, 120, 100);
-    draw_central_text(FW_FLAVOUR " variant", frame, 120, 118);
+    draw_central_text(tmp, frame, 120, y0 + 32);
+    draw_central_text(FW_FLAVOUR " variant", frame, 120, y0 + 48);
     break;
   case 1:
-    draw_central_text("Flash info", frame, 120, 70);
+    draw_central_text("Flash info", frame, 120, y0);
     npf_snprintf(tmp, sizeof(tmp), "Dev ID: %08lx", flashinfo.deviceid);
-    draw_central_text(tmp, frame, 120, 95);
+    draw_central_text(tmp, frame, 120, y0 + 20);
     if (flashinfo.size && flashinfo.blksize && flashinfo.blkcount) {
       human_size_kb(tmp2, sizeof(tmp2), flashinfo.size >> 10);
       npf_snprintf(tmp, sizeof(tmp), "%s [%lu * %lu]", tmp2, flashinfo.blksize, flashinfo.blkcount);
       if (flashinfo.regioncnt != 1)
         strcat(tmp, " !");
-      draw_central_text(tmp, frame, 120, 115);
+      draw_central_text(tmp, frame, 120, y0 + 40);
     } else {
       npf_snprintf(tmp, sizeof(tmp), "No CFI! (hardwired %dKiB)", FW_MAX_SIZE_KB);
-      draw_central_text(tmp, frame, 120, 115);
+      draw_central_text(tmp, frame, 120, y0 + 40);
     }
     break;
   case 2:
-    draw_central_text(msgs[lang_id][MSG_DBPINFO], frame, 120, 70);
+    draw_central_text(msgs[lang_id][MSG_DBPINFO], frame, 120, y0);
     npf_snprintf(tmp, sizeof(tmp), "%s - %s", pdbinfo.version, pdbinfo.date);
-    draw_central_text(tmp, frame, 120, 90);
+    draw_central_text(tmp, frame, 120, y0 + 18);
     npf_snprintf(tmp, sizeof(tmp), "Game count: %lu", pdbinfo.patch_count);
-    draw_central_text(tmp, frame, 120, 110);
+    draw_central_text(tmp, frame, 120, y0 + 36);
     break;
   case 3:
     npf_snprintf(tmp, sizeof(tmp), "SD Card ID: %02x | %04x", sd_info.manufacturer, sd_info.oemid);
-    draw_central_text(tmp, frame, 120, 70);
+    draw_central_text(tmp, frame, 120, y0);
     human_size_kb(tmp2, sizeof(tmp2), sd_info.block_cnt / 2);
     npf_snprintf(tmp, sizeof(tmp), "Type: %s  Size: %s", sd_info.sdhc ? "SDHC" : "SDSC", tmp2);
-    draw_central_text(tmp, frame, 120, 90);
+    draw_central_text(tmp, frame, 120, y0 + 18);
     npf_snprintf(tmp, sizeof(tmp), "Info: %c%c%c%c%c (%d/%d)",
       sd_info.prodname[0] ?: '#', sd_info.prodname[1] ?: '#',
       sd_info.prodname[2] ?: '#', sd_info.prodname[3] ?: '#',
       sd_info.prodname[4] ?: '#', 2000 + sd_info.year, sd_info.month);
-    draw_central_text(tmp, frame, 120, 110);
+    draw_central_text(tmp, frame, 120, y0 + 36);
     break;
   }
 
   // Flashing info
-  dma_memset16(&frame[138*SCREEN_WIDTH], dup8(FG_COLOR), SCREEN_WIDTH*22/2);
   draw_text_ovf_rotate(enable_flashing ? msgs[lang_id][MSG_FWUP_ENABLED] : msgs[lang_id][MSG_FWUP_HOTKEY], frame,
-                       4, 141, SCREEN_WIDTH - 8, &smenu.anim_state);
+                       6, sh + PG_HELP_Y, SCREEN_WIDTH - 12, &smenu.anim_state);
 }
 
 void render_tools(volatile uint8_t *frame) {
@@ -3267,6 +3338,13 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[CAL_TODAYLN] = acc;
   MEM_PALETTE[CAL_TODAYTX] = RGB2GBA(0x101018);
   const bool dark = thnum == THEME_DARK;
+  MEM_PALETTE[SEL_ROW] = mix15(acc, themes[thnum].bg_color, 205);
+  {
+    // Bottom bar of the settings pages: a gradient of the background color
+    const uint16_t bt = dark ? RGB2GBA(0x3a3e46) : RGB2GBA(0xffffff), bb = dark ? RGB2GBA(0x0a0a0e) : RGB2GBA(0xb4b8c0);
+    for (unsigned i = 0; i < BOT_N; i++)
+      MEM_PALETTE[BOT_BASE + i] = mix15(bt, bb, i * 256 / (BOT_N - 1));
+  }
   const int dk = dark ? 150 : 0;       // The dark theme has a darker bar, black grid and darker buttons
   // The info bar: a smooth gradient, a shade for each row (light at the top, the accent
   // color at 8/15 of the height, a bit darker at the bottom).
@@ -3411,6 +3489,7 @@ void menu_render(unsigned fcnt) {
   int shift = 0;
   if (!bar)
     shift = (smenu.menu_tab == MENUTAB_RECENT || smenu.menu_tab == MENUTAB_ROMBROWSE
+             || smenu.menu_tab == MENUTAB_SETTINGS || smenu.menu_tab == MENUTAB_UILANG || smenu.menu_tab == MENUTAB_INFO
              #ifdef SUPPORT_NORGAMES
              || smenu.menu_tab == MENUTAB_NORBROWSE
              #endif
@@ -4180,19 +4259,18 @@ static void keypress_popup_filemgr(unsigned newkeys) {
 
 static void keypress_menu_recent(unsigned newkeys) {
   if (smenu.recent.maxentries) {
+    // Same keys as the carousel: LEFT/RIGHT move one entry, UP/DOWN a few.
+    int sel = smenu.recent.selector;
+    if (newkeys & KEY_BUTTLEFT)
+      sel = MAX(0, sel - 1);
+    if (newkeys & KEY_BUTTRIGHT)
+      sel = MIN(smenu.recent.maxentries - 1, sel + 1);
     if (newkeys & KEY_BUTTUP)
-      smenu.recent.selector = MAX(0, smenu.recent.selector - 1);
-    else if (newkeys & KEY_BUTTDOWN)
-      smenu.recent.selector = MIN(smenu.recent.maxentries - 1, smenu.recent.selector + 1);
-    if (newkeys & KEY_BUTTLEFT) {
-      smenu.recent.selector = MAX(0, smenu.recent.selector - RECENT_ROWS);
-      smenu.recent.seloff   = MAX(0, smenu.recent.seloff - RECENT_ROWS);
-    }
-    else if (newkeys & KEY_BUTTRIGHT) {
-      smenu.recent.selector = MIN(smenu.recent.maxentries - 1, smenu.recent.selector + RECENT_ROWS);
-      smenu.recent.seloff   = MIN(smenu.recent.maxentries - 1, smenu.recent.seloff   + RECENT_ROWS);
-    }
-    if (newkeys & KEY_BUTTA) {
+      sel = MAX(0, sel - CAR_PAGE);
+    if (newkeys & KEY_BUTTDOWN)
+      sel = MIN(smenu.recent.maxentries - 1, sel + CAR_PAGE);
+    smenu.recent.selector = sel;
+    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA | KEY_BUTTR)) {
       t_rentry *e = &sdr_state->rentries[smenu.recent.selector];
       #ifdef SUPPORT_NORGAMES
       if (e->flags & FLAG_RECENT_NOR) {
@@ -4220,8 +4298,10 @@ static void keypress_menu_recent(unsigned newkeys) {
     }
     else if (newkeys & KEY_BUTTSEL) {
       void recent_del_cb(bool confirm) {
-        if (confirm)
+        if (confirm) {
           delete_recent_flush(smenu.recent.selector);
+          cart_flush();
+        }
       }
       spop.qpop.message = msgs[lang_id][MSG_Q4_DELREC];
       spop.qpop.default_button = msgs[lang_id][MSG_Q_NO];
@@ -4365,20 +4445,18 @@ static void keypress_menu_home(unsigned newkeys) {
 #ifdef SUPPORT_NORGAMES
 static void keypress_menu_norbrowse(unsigned newkeys) {
   if (smenu.fbrowser.maxentries) {
+    int sel = smenu.fbrowser.selector;
+    if (newkeys & KEY_BUTTLEFT)
+      sel = MAX(0, sel - 1);
+    if (newkeys & KEY_BUTTRIGHT)
+      sel = MIN(smenu.fbrowser.maxentries - 1, sel + 1);
     if (newkeys & KEY_BUTTUP)
-      smenu.fbrowser.selector = MAX(0, smenu.fbrowser.selector - 1);
+      sel = MAX(0, sel - CAR_PAGE);
     if (newkeys & KEY_BUTTDOWN)
-      smenu.fbrowser.selector = MIN(smenu.fbrowser.maxentries - 1, smenu.fbrowser.selector + 1);
-    if (newkeys & KEY_BUTTLEFT) {
-      smenu.fbrowser.selector = MAX(0, smenu.fbrowser.selector - NORGAMES_ROWS);
-      smenu.fbrowser.seloff   = MAX(0, smenu.fbrowser.seloff - NORGAMES_ROWS);
-    }
-    if (newkeys & KEY_BUTTRIGHT) {
-      smenu.fbrowser.selector = MIN(smenu.fbrowser.maxentries - 1, smenu.fbrowser.selector + NORGAMES_ROWS);
-      smenu.fbrowser.seloff   = MIN(smenu.fbrowser.maxentries - 1, smenu.fbrowser.seloff   + NORGAMES_ROWS);
-    }
+      sel = MIN(smenu.fbrowser.maxentries - 1, sel + CAR_PAGE);
+    smenu.fbrowser.selector = sel;
 
-    if (newkeys & KEY_BUTTA)
+    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA | KEY_BUTTR))
       browser_open_nor(&sdr_state->nordata.games[smenu.fbrowser.selector]);
     else if (newkeys & KEY_BUTTSEL) {
       // Prompt NOR entry deletion.
@@ -4396,6 +4474,7 @@ static void keypress_menu_norbrowse(unsigned newkeys) {
         if (!flashmgr_store(ROM_FLASHMETA_ADDR, FLASH_METADATA_SIZE, (t_reg_entry*)&sdr_state->nordata))
           spop.alert_msg = msgs[lang_id][MSG_ERR_NORUPD];
         flashbrowser_reload();   // Force list reload, free block calculation, etc.
+        cart_flush();
       }
       spop.qpop.message = msgs[lang_id][MSG_Q5_DELNORG];
       spop.qpop.default_button = msgs[lang_id][MSG_Q_NO];
@@ -4414,10 +4493,19 @@ static void keypress_menu_norbrowse(unsigned newkeys) {
 #endif
 
 static void keypress_menu_settings(unsigned newkeys) {
-  if (newkeys & KEY_BUTTUP)
-    smenu.set.selector = MAX(0, smenu.set.selector - 1);
-  if (newkeys & KEY_BUTTDOWN)
+  // The section titles are not selectable.
+  if (smenu.set.selector == SettTitle1)
+    smenu.set.selector = SettHotkey;
+  if (newkeys & KEY_BUTTUP) {
+    smenu.set.selector = MAX(SettHotkey, smenu.set.selector - 1);
+    if (smenu.set.selector == SettTitle2)
+      smenu.set.selector--;
+  }
+  if (newkeys & KEY_BUTTDOWN) {
     smenu.set.selector = MIN(SettMAX - 1, smenu.set.selector + 1);
+    if (smenu.set.selector == SettTitle2)
+      smenu.set.selector++;
+  }
   if (newkeys & KEY_BUTTLEFT) {
     if (smenu.set.selector == SettHotkey)
       hotkey_combo = (hotkey_combo + hotkey_listcnt - 1) % hotkey_listcnt;
@@ -4763,8 +4851,13 @@ void menu_keypress(unsigned newkeys) {
     for (unsigned i = 0; i < 3; i++)
       if (tab0 == setgrp[i])
         gi = i;
-    // In the carousel they are "directory up" (L) and "open" (R) instead.
-    if (!editing && tab0 != MENUTAB_ROMBROWSE && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
+    // In the carousels they are "directory up" (L) and "open" (R) instead.
+    const bool car_tab = tab0 == MENUTAB_ROMBROWSE || tab0 == MENUTAB_RECENT
+      #ifdef SUPPORT_NORGAMES
+      || tab0 == MENUTAB_NORBROWSE
+      #endif
+      ;
+    if (!editing && !car_tab && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
       if (gi >= 0) {
         if ((newkeys & KEY_BUTTL) && gi > 0)
           smenu.menu_tab = setgrp[gi - 1];
