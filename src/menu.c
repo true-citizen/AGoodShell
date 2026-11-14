@@ -3269,10 +3269,11 @@ void render_info(volatile uint8_t *frame) {
     // Title, drawn twice one pixel apart to look bolder.
     draw_central_text("AGoodShell++", frame, 120, y0);
     draw_central_text("AGoodShell++", frame, 121, y0);
-    draw_central_text("based on SuperFW by davidgf", frame, 120, y0 + 16);
-    npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lu (%08lx)", vmaj, vmin, gitver);
-    draw_central_text(tmp, frame, 120, y0 + 32);
-    draw_central_text(FW_FLAVOUR " variant", frame, 120, y0 + 48);
+    draw_central_text("based on SuperFW by davidgf", frame, 120, y0 + 14);
+    draw_central_text("co-author: true-citizen", frame, 120, y0 + 28);
+    npf_snprintf(tmp, sizeof(tmp), "Version %lu.%lub (%08lx)", vmaj, vmin, gitver);
+    draw_central_text(tmp, frame, 120, y0 + 42);
+    draw_central_text(FW_FLAVOUR " variant", frame, 120, y0 + 56);
     break;
   case 1:
     draw_central_text("Flash info", frame, 120, y0);
