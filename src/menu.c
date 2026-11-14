@@ -120,6 +120,9 @@ enum {
 #define CLK_TICK         43      // Clock numbers
 #define CLK_FGRID        46      // Grid lines over the clock face
 #define CAL_BG           47      // Calendar and clock face background (white, dark in the dark theme)
+#define CAL_TODAY        48      // Calendar current day: lighter accent fill, dotted frame, dark text
+#define CAL_TODAYLN      49
+#define CAL_TODAYTX      50
 #define GRID_COLOR       44      // Background grid lines (black in the dark theme)
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
@@ -423,6 +426,8 @@ static struct {
   struct {
     int sel;                      // Selected button (HB_*)
     int row2;                     // Middle row button to return to (HB_RECENT/HB_HWTEST)
+    int sx0, sy0, sx1, sy1;       // Animated selector frame (8.8 fixed point)
+    bool sinit;                   // The selector frame was placed on its first button
   } home;
 } smenu;
 
@@ -2234,8 +2239,18 @@ void render_clock(volatile uint8_t *frame) {
     const int y = CAL_Y + 32 + (idx / 7) * CAL_TILE;
     uint8_t color = (idx % 7) == 0 ? CAL_RED : (idx % 7) == 6 ? CAL_BLUE : CAL_TXT;
     if (dd == day) {
-      car_rrect(frame, x + 1, y + 1, x + CAL_TILE - 1, y + CAL_TILE - 1, ACC_COLOR);
-      color = BAR_TX;
+      // Square highlight, 2 px inside the cell, with a dotted frame.
+      const int hx0 = x + 2, hy0 = y + 2, hx1 = x + CAL_TILE - 2, hy1 = y + CAL_TILE - 2;
+      car_rect(frame, hx0, hy0, hx1, hy1, CAL_TODAY);
+      for (int i = hx0; i < hx1; i += 2) {
+        car_span(frame, hy0, i, i + 1, CAL_TODAYLN);
+        car_span(frame, hy1 - 1, i + ((hx1 - hx0) & 1 ? 0 : 1), i + 1 + ((hx1 - hx0) & 1 ? 0 : 1), CAL_TODAYLN);
+      }
+      for (int j = hy0; j < hy1; j += 2) {
+        car_span(frame, j, hx0, hx0 + 1, CAL_TODAYLN);
+        car_span(frame, j + ((hy1 - hy0) & 1 ? 0 : 1), hx1 - 1, hx1, CAL_TODAYLN);
+      }
+      color = CAL_TODAYTX;
     }
     npf_snprintf(buf, sizeof(buf), "%u", dd);
     text_center(frame, buf, x + CAL_TILE / 2, y, color);
@@ -2362,11 +2377,36 @@ static void home_plate(volatile uint8_t *frame, int x0, int y0, int x1, int y1) 
   car_outline(frame, x0, y0, x1, y1, 1, BTN_EDGE);
 }
 
-// Corner brackets around the selected button.
+// Moves the selector frame towards the selected button: position and size
+// ease at once, so it slides and grows/shrinks to the new button.
+static void home_ease(int b) {
+  const int t[4] = { (home_rects[b].x0 - 2) << 8, (home_rects[b].y0 - 2) << 8,
+                     (home_rects[b].x1 + 2) << 8, (home_rects[b].y1 + 2) << 8 };
+  int *const c[4] = { &smenu.home.sx0, &smenu.home.sy0, &smenu.home.sx1, &smenu.home.sy1 };
+  if (!smenu.home.sinit) {
+    for (int i = 0; i < 4; i++) *c[i] = t[i];
+    smenu.home.sinit = true;
+    return;
+  }
+  unsigned frames = render_fcnt > 8 ? 8 : render_fcnt;
+  while (frames--) {
+    for (int i = 0; i < 4; i++) {
+      const int diff = t[i] - *c[i];
+      const int step = diff / 3;
+      *c[i] += step ? step : diff;
+    }
+  }
+}
+
+// Corner brackets around the selected button (at the animated frame position).
 static void home_brackets(volatile uint8_t *frame, int b) {
-  const int x0 = home_rects[b].x0 - 2, y0 = home_rects[b].y0 - 2;
-  const int x1 = home_rects[b].x1 + 2, y1 = home_rects[b].y1 + 2;
-  const int len = 10, th = 2;
+  home_ease(b);
+  const int x0 = (smenu.home.sx0 + 128) >> 8, y0 = (smenu.home.sy0 + 128) >> 8;
+  const int x1 = (smenu.home.sx1 + 128) >> 8, y1 = (smenu.home.sy1 + 128) >> 8;
+  const int th = 2;
+  int len = 10;
+  if (len > (x1 - x0) / 2) len = (x1 - x0) / 2;
+  if (len > (y1 - y0) / 2) len = (y1 - y0) / 2;
   car_rect(frame, x0, y0, x0 + len, y0 + th, ACC_COLOR);
   car_rect(frame, x0, y0, x0 + th, y0 + len, ACC_COLOR);
   car_rect(frame, x1 - len, y0, x1, y0 + th, ACC_COLOR);
@@ -3223,6 +3263,9 @@ void reload_theme(unsigned thnum) {
   const uint16_t acc = RGB2GBA(rgb);
   const bool light = (((rgb >> 16) & 0xFF) * 3 + ((rgb >> 8) & 0xFF) * 6 + (rgb & 0xFF)) / 10 > 150;
   MEM_PALETTE[ACC_COLOR] = acc;
+  MEM_PALETTE[CAL_TODAY]   = mix15(acc, 0x7FFF, 150);   // Lighter shade of the accent color
+  MEM_PALETTE[CAL_TODAYLN] = acc;
+  MEM_PALETTE[CAL_TODAYTX] = RGB2GBA(0x101018);
   const bool dark = thnum == THEME_DARK;
   const int dk = dark ? 150 : 0;       // The dark theme has a darker bar, black grid and darker buttons
   // The info bar: a smooth gradient, a shade for each row (light at the top, the accent
@@ -4196,8 +4239,8 @@ static void keypress_menu_recent(unsigned newkeys) {
 }
 
 // Keys for the carousel. LEFT/RIGHT move one entry and UP/DOWN a few. A or
-// START (the label on the selected entry) open the entry (enter directories,
-// launch files), B goes to the parent directory and SELECT
+// START or R (the label on the selected entry) open the entry (enter directories,
+// launch files), B or L go to the parent directory and SELECT
 // shows the file management menu, like in the plain ROM browser.
 static void keypress_menu_browse(unsigned newkeys) {
   const int n = smenu.browser.dispentries;
@@ -4214,7 +4257,7 @@ static void keypress_menu_browse(unsigned newkeys) {
     smenu.browser.selector = sel;
 
     // Move into a new dir and/or open a file
-    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA)) {
+    if (newkeys & (KEY_BUTTA | KEY_BUTTSTA | KEY_BUTTR)) {
       t_centry *e = sdr_state->filefilter[sel];
       if (strlen(smenu.browser.cpath) + strlen(e->fname) + 2 > MAX_FN_LEN) {
         spop.alert_msg = msgs[lang_id][MSG_ERR_GENERIC];
@@ -4243,7 +4286,7 @@ static void keypress_menu_browse(unsigned newkeys) {
       spop.selector = 0;
     }
   }
-  if (newkeys & KEY_BUTTB) {
+  if (newkeys & (KEY_BUTTB | KEY_BUTTL)) {
     // Try to go up in the dir structure
     if (movedir_up()) {
       smenu.browser.selector = smenu.browser.selhist[0];
@@ -4251,8 +4294,8 @@ static void keypress_menu_browse(unsigned newkeys) {
               sizeof(smenu.browser.selhist) - sizeof(smenu.browser.selhist[0]));
       browser_reload();
       car_pos = smenu.browser.selector << 8;
-    } else {
-      smenu.menu_tab = MENUTAB_HOME;
+    } else if (newkeys & KEY_BUTTB) {
+      smenu.menu_tab = MENUTAB_HOME;     // L at the root does nothing
     }
   }
 }
@@ -4720,7 +4763,8 @@ void menu_keypress(unsigned newkeys) {
     for (unsigned i = 0; i < 3; i++)
       if (tab0 == setgrp[i])
         gi = i;
-    if (!editing && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
+    // In the carousel they are "directory up" (L) and "open" (R) instead.
+    if (!editing && tab0 != MENUTAB_ROMBROWSE && (newkeys & (KEY_BUTTL | KEY_BUTTR))) {
       if (gi >= 0) {
         if ((newkeys & KEY_BUTTL) && gi > 0)
           smenu.menu_tab = setgrp[gi - 1];
