@@ -120,13 +120,13 @@ enum {
 #define CLK_TICK         43      // Clock numbers
 #define CLK_FGRID        46      // Grid lines over the clock face
 #define CAL_BG           47      // Calendar and clock face background (white, dark in the dark theme)
-#define CAL_TODAY        48      // Calendar current day: lighter accent fill, dotted frame, dark text
-#define CAL_TODAYLN      49
-#define CAL_TODAYTX      50
-#define BOT_BASE         51      // Bottom bar of the settings pages: BOT_N shades, top to bottom
-#define BOT_N            11
-#define PG_LINE          62      // Dotted lines, scroll bar track and top line of the bottom bar
-#define SEL_ROW          63      // Selected row of the settings pages (tint of the accent color)
+// 48..54 belong to the cartridges (CART_PAL_PLASTIC, CART_PAL_PIN): do not use them here.
+#define CAL_TODAY        55      // Calendar current day: lighter accent fill, dotted frame, dark text
+#define CAL_TODAYLN      56
+#define CAL_TODAYTX      57
+#define SEL_ROW          58      // Selected row of the settings pages (tint of the accent color)
+#define BOT_BASE         4       // Bottom bar of the settings pages: BOT_N shades, top to bottom (4..15)
+#define BOT_N            12
 #define GRID_COLOR       44      // Background grid lines (black in the dark theme)
 #define BTN_EDGE         45      // Home button outlines
 #define GRAD_BASE        64      // Home button gradient: GRAD_N shades, top to bottom
@@ -3054,7 +3054,7 @@ static void prow_add(const char *label, const char *val, uint8_t kind) {
 
 static void page_dotted(volatile uint8_t *frame, int y, int x0, int x1) {
   for (int x = x0; x < x1; x += 2)
-    car_span(frame, ui_yshift + y, x, x + 1, PG_LINE);
+    car_span(frame, ui_yshift + y, x, x + 1, BTN_EDGE);
 }
 
 // Title, dotted line and the bottom bar.
@@ -3066,7 +3066,7 @@ static void page_chrome(volatile uint8_t *frame, const char *title) {
 
   for (int i = 0; i < SCREEN_HEIGHT - PG_BAR_Y; i++)
     car_span(frame, sh + PG_BAR_Y + i, 0, SCREEN_WIDTH, BOT_BASE + i * BOT_N / (SCREEN_HEIGHT - PG_BAR_Y));
-  car_span(frame, sh + PG_BAR_Y, 0, SCREEN_WIDTH, PG_LINE);
+  car_span(frame, sh + PG_BAR_Y, 0, SCREEN_WIDTH, BTN_EDGE);
   draw_text_ovf("< L", frame, 6, sh + PG_BAR_Y + 1, 40);
   draw_rightj_text("R >", frame, SCREEN_WIDTH - 6, sh + PG_BAR_Y + 1);
   draw_central_text("AGoodShell++", frame, SCREEN_WIDTH / 2, sh + PG_BAR_Y + 1);
@@ -3111,7 +3111,7 @@ static void page_list(volatile uint8_t *frame, int sel, const char *help) {
   // Scroll bar (only when the rows do not fit).
   if (n > PG_ROWS) {
     const int th = PG_ROWS * PG_ROWH, top = sh + PG_LIST_Y;
-    car_rect(frame, PG_SCR_X + 2, top, PG_SCR_X + 3, top + th, PG_LINE);
+    car_rect(frame, PG_SCR_X + 2, top, PG_SCR_X + 3, top + th, BTN_EDGE);
     const int bh = MAX(8, th * PG_ROWS / n);
     const int by = top + (th - bh) * off / (n - PG_ROWS);
     car_rect(frame, PG_SCR_X + 1, by, PG_SCR_X + 5, by + bh, FT_COLOR);
@@ -3342,7 +3342,6 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[CAL_TODAYLN] = acc;
   MEM_PALETTE[CAL_TODAYTX] = RGB2GBA(0x101018);
   const bool dark = thnum == THEME_DARK;
-  MEM_PALETTE[PG_LINE] = mix15(themes[thnum].ft_color, themes[thnum].bg_color, 150);
   MEM_PALETTE[SEL_ROW] = mix15(acc, themes[thnum].bg_color, 205);
   {
     // Bottom bar of the settings pages: a gradient of the background color
