@@ -1,20 +1,17 @@
 # Media: MP3 playback and picture viewer (experimental, `multimedia` branch)
 
 Real MP3 decoding on the GBA's ARM7TDMI (16.78 MHz, no FPU) is possible, but only for small streams.
+MP3 playback is not intended to serious functionality, so beware that it will stutter
 
 ## Limits
 
-| Stream | CPU use (mGBA) | Verdict |
-|---|---|---|
-| 16 kHz mono, 16 kbps | 61% (worst frame 85%) | works |
-| 16 kHz mono, 32 kbps | up to 112% over a second, 88% after | plays without underruns, marginal |
-| 22.05 kHz mono, 16 kbps | 79% (worst frame 111%) | stutters |
-| 22.05 kHz mono, 32 kbps | 89% | too tight |
-| 44.1 kHz stereo, 64 kbps | 329% | impossible |
+| Stream  | Verdict |
+|---|---|
+| 8 kHz mono, 16 kbps | kinda works, but there are stutters sometimes |
 
-So: **MPEG-1/2 Layer III, mono (stereo is mixed down), 16 kHz or lower, about 16 kbps.**
+So: **MPEG-1/2 Layer III, mono (stereo is mixed down), 8 kHz or lower, about 16 kbps.**
 Output is 8-bit on Direct Sound A (18157 Hz, linear resampling), so expect "old radio" quality.
-Encode with e.g. `ffmpeg -i in.wav -ac 1 -ar 16000 -b:a 16k out.mp3`.
+Encode with e.g. `ffmpeg -i in.wav -ac 1 -ar 8000 -b:a 16k out.mp3`.
 
 ## How it works
 
@@ -44,10 +41,6 @@ Speed (mGBA, hot code in IWRAM): about 25 s for a 1000x700 PNG and about 30 s pe
 JPEG. JPEGs at least 8 times bigger than the screen are decoded at 1/8 size (one pixel per 8x8
 block), which is much faster (a 3200x2100 photo takes about 20 s). picojpeg is public domain.
 
-## Testing
-
-`tests/media/mktest.py` builds a ROM (media ROM + file) to run in mGBA, and `tests/media/audio.c` captures its audio and a screenshot with libmgba.
-
 ## Status
 
-Verified in mGBA only (correct pitch and timing, 0 underruns on a 16 kHz/16 kbps file; test pictures of each format). **Not tested on real hardware**, including real SD read speed and the exit path.
+Works, but provided without warranty of any kind
