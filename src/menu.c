@@ -223,6 +223,7 @@ enum {
 #define CAR_INFO_Y       162     // "Start" or "Open" and size, below it
 #define CAR_ICON_SZ      32      // File icon size (in the label window of cartridges without art)
 #define CAR_SLOTS        3       // Cartridges with a loaded box art (previous, current, next)
+#define CAR_ICON_SLOTS   8       // Game icons kept in memory (DSi style carousel); more than the plates on screen
 #ifdef NO_CLASSIC_CAROUSEL
 #define CLASSIC_AVAILABLE 0     // (does not fit in the flash of the SD flavour)
 #else
@@ -524,6 +525,7 @@ typedef struct {
   t_centry *fileorder[BROWSER_MAXFN_CNT];
   t_centry *filefilter[BROWSER_MAXFN_CNT];
   uint8_t cartart[CAR_SLOTS][CART_ART_MAX];              // Box art of the nearby entries
+  uint8_t gameicons[CAR_ICON_SLOTS][CAR_ICON_SZ * CAR_ICON_SZ];   // Icons of the nearby entries (DSi style carousel)
   uint8_t cartrle[CAR_SLOTS + 1][CART_RLE_MAX];          // Their cartridge pictures (unpacked), then the default one
   uint8_t lang[LANG_PACK_MAX];                           // Translation pack of the current language
   t_centry fentries[BROWSER_MAXFN_CNT];
@@ -1746,9 +1748,80 @@ typedef struct {
 } t_cartslot;
 static t_cartslot cartslot[CAR_SLOTS];
 
+// Icons of the games for the DSi style carousel, from /ICON (see docs/cartridges.md). Each
+// entry uses the slot (entry number % CAR_ICON_SLOTS); has is false when there is no icon.
+typedef struct {
+  int idx;
+  bool has;
+} t_iconslot;
+static t_iconslot iconslot[CAR_ICON_SLOTS];
+
 static void cart_flush() {
   for (unsigned i = 0; i < CAR_SLOTS; i++)
     cartslot[i].idx = -1;
+  for (unsigned i = 0; i < CAR_ICON_SLOTS; i++)
+    iconslot[i].idx = -1;
+}
+
+// Looks for /ICON/<name>.bmp of a game and, for a GBA ROM, /ICON/<game code>.bmp.
+static void icon_fill(int idx) {
+  t_cview ev;
+  car_entry(idx, &ev);
+  const t_cview *e = &ev;
+  t_iconslot *s = &iconslot[idx % CAR_ICON_SLOTS];
+  s->idx = idx;
+  s->has = false;
+  if (entry_icon_kind(e) != ICON_KIND_GAME)
+    return;
+
+  const char *ext = find_extension(e->name);
+  char name[MAX_FN_LEN], path[MAX_FN_LEN + 16], gcode[5];
+  strbcpy(name, e->name, ext ? (unsigned)(ext - e->name) : strlen(e->name) + 1);
+  const t_cartwin win = { 0, 0, CAR_ICON_SZ, CAR_ICON_SZ };
+  uint8_t *dst = sdr_state->gameicons[idx % CAR_ICON_SLOTS];
+
+  npf_snprintf(path, sizeof(path), "/ICON/%s.bmp", name);
+  s->has = cart_load_art(path, dst, win, true);
+  if (!s->has && !e->nor && ext && !strcasecmp(ext, "gba")) {
+    if (e->path)
+      strbcpy(path, e->path, sizeof(path));
+    else
+      npf_snprintf(path, sizeof(path), "%s%s", smenu.browser.cpath, e->name);
+    if (cart_read_gcode(path, gcode)) {
+      npf_snprintf(path, sizeof(path), "/ICON/%s.bmp", gcode);
+      s->has = cart_load_art(path, dst, win, true);
+    }
+  }
+}
+
+// Draws a loaded icon (sz x sz, pixel 0 is transparent) with its top left corner at (x0, y0).
+// VRAM only accepts 16 bit writes: whole words when both pixels are opaque.
+static void car_pic(volatile uint8_t *frame, int x0, int y0, const uint8_t *src, int sz) {
+  for (int j = 0; j < sz; j++) {
+    const int y = y0 + j;
+    if (y < ui_yshift || y >= SCREEN_HEIGHT + ui_yshift)
+      continue;
+    volatile uint16_t *row = (volatile uint16_t*)&frame[y * SCREEN_WIDTH];
+    const uint16_t *s16 = (const uint16_t*)&src[j * sz];
+    for (int i = 0; i < sz; i += 2) {
+      const uint16_t v = s16[i >> 1];
+      if (!v)
+        continue;
+      const int x = x0 + i;
+      if (!(x & 1) && (v & 0xFF) && (v >> 8) && x >= 0 && x + 1 < SCREEN_WIDTH) {
+        row[x >> 1] = v;
+        continue;
+      }
+      for (int k = 0; k < 2; k++) {
+        const uint8_t c = k ? v >> 8 : v & 0xFF;
+        const int px = x + k;
+        if (!c || px < 0 || px >= SCREEN_WIDTH)
+          continue;
+        const uint16_t w = row[px >> 1];
+        row[px >> 1] = (px & 1) ? (w & 0x00FF) | ((uint16_t)c << 8) : (w & 0xFF00) | c;
+      }
+    }
+  }
 }
 
 // Looks for the box art and the plastic color of an entry. This reads files from
@@ -1779,7 +1852,7 @@ static void cart_fill(int idx) {
   uint8_t *art = sdr_state->cartart[idx % CAR_SLOTS];
 
   npf_snprintf(path, sizeof(path), "/ART/%s.bmp", name);
-  s->art = cart_load_art(path, art, win);
+  s->art = cart_load_art(path, art, win, false);
   if (!e->nor && ext && !strcasecmp(ext, "gba")) {
     if (e->path)
       strbcpy(path, e->path, sizeof(path));
@@ -1788,7 +1861,7 @@ static void cart_fill(int idx) {
     havegc = cart_read_gcode(path, gcode);
     if (havegc && !s->art) {
       npf_snprintf(path, sizeof(path), "/ART/%s.bmp", gcode);
-      s->art = cart_load_art(path, art, win);
+      s->art = cart_load_art(path, art, win, false);
     }
   }
   cart_find_color(name, havegc ? gcode : NULL, &s->rgb);
@@ -1983,6 +2056,19 @@ static void render_carousel_classic(volatile uint8_t *frame) {
   ds_rrect(frame, cx - CAR_SLOT_W / 2, CAR_SLOT_Y, cx + CAR_SLOT_W / 2, CAR_SLOT_Y + CAR_SLOT_H, 4, BL_EDGE, 1);
   ds_rrect(frame, cx - CAR_SLOT_W / 2 + 1, CAR_SLOT_Y + 1, cx + CAR_SLOT_W / 2 - 1, CAR_SLOT_Y + CAR_SLOT_H - 1, 3, BL_BASE, 6);
 
+  // Once the plates stop, look up the icons that are missing (the selected entry first,
+  // then its neighbours), one per frame.
+  if (n && car_pos == *car_selp() << 8) {
+    static const int8_t order[5] = { 0, 1, -1, 2, -2 };
+    for (unsigned i = 0; i < 5; i++) {
+      const int j = *car_selp() + order[i];
+      if (j >= 0 && j < n && iconslot[j % CAR_ICON_SLOTS].idx != j) {
+        icon_fill(j);
+        break;
+      }
+    }
+  }
+
   if (n) {
     // Draw only the plates that are (at least partially) on screen.
     const int range = cx / CAR_PITCH + 2;
@@ -1993,7 +2079,11 @@ static void render_carousel_classic(volatile uint8_t *frame) {
       car_plate(frame, bx, CAR_PLATE_Y);
       t_cview iv;
       car_entry(i, &iv);
-      car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(&iv));
+      const t_iconslot *is = &iconslot[i % CAR_ICON_SLOTS];
+      if (is->idx == i && is->has)
+        car_pic(frame, bx - CAR_ICON_SZ / 2, CAR_PLATE_Y + CAR_ICON_Y, sdr_state->gameicons[i % CAR_ICON_SLOTS], CAR_ICON_SZ);
+      else
+        car_icon(frame, bx, CAR_PLATE_Y + CAR_ICON_Y, CAR_ICON_SZ, entry_icon_kind(&iv));
     }
     t_cview sv;
     car_entry(*car_selp(), &sv);

@@ -141,7 +141,7 @@ static uint32_t le(const uint8_t *p, unsigned n) {
 // Ordered dither thresholds (4x4 Bayer matrix, scaled to 8..248)
 static const uint8_t bayer[16] = { 8, 136, 40, 168, 200, 72, 232, 104, 56, 184, 24, 152, 248, 120, 216, 88 };
 
-bool cart_load_art(const char *path, uint8_t *dst, t_cartwin win) {
+bool cart_load_art(const char *path, uint8_t *dst, t_cartwin win, bool keyed) {
   FIL fd;
   if (FR_OK != f_open(&fd, path, FA_READ))
     return false;
@@ -192,6 +192,10 @@ bool cart_load_art(const char *path, uint8_t *dst, t_cartwin win) {
         } else {
           const uint8_t *px = &row[sx * (bpp / 8)];
           b = px[0]; g = px[1]; r = px[2];
+        }
+        if (keyed && r == 255 && g == 0 && b == 255) {
+          out[x] = 0;       // Transparent
+          continue;
         }
         // Reduce to the palette. Colors that are in the palette stay as they are.
         const unsigned th = bayer[(y & 3) * 4 + (x & 3)];

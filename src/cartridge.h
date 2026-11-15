@@ -63,7 +63,8 @@ void cart_render(volatile uint8_t *rows, const t_cartview *views, unsigned count
 
 // Loads and converts a BMP into the box art format (dst needs to be 16-bit writable). The
 // window size is the one of the cartridge type; a BMP of another size is scaled to it.
-bool cart_load_art(const char *path, uint8_t *dst, t_cartwin win);
+// With keyed set, pure magenta (FF00FF) pixels become 0, "transparent" (file icons).
+bool cart_load_art(const char *path, uint8_t *dst, t_cartwin win, bool keyed);
 // Reads the game code of a GBA ROM (5 bytes, nul terminated).
 bool cart_read_gcode(const char *path, char *gcode);
 // Looks up the plastic color of a game by name (ROM name without extension) first and
