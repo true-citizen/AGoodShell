@@ -21,9 +21,6 @@ contacts of some cartridges keep their color.
 | ngc           | Neo Geo Pocket Color  | 76x68        |
 | sms, sg       | Master System / SG-1000 | 100x66     |
 
-The SD build is very short of flash space and only has the GBA, GB, GBC and NES pictures (the
-others show the GBA cartridge).
-
 ## Box art
 
 BMP files (uncompressed, 8, 24 or 32 bits per pixel, at most 256x256) in `/ART` on the SD card,
