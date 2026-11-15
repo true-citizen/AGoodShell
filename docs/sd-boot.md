@@ -46,11 +46,3 @@ with other strings) the menu shows English.
 
 Result (Chis): the EWRAM image went from 255 KB to 180 KB, 71 KB below the limit; the SD and Lite
 builds are at 171 KB with all the features on.
-
-## Other candidates
-
-* Bundled emulators, fonts and the patch database are already in SDRAM, not in EWRAM.
-* The cartridge pictures (1.5 KB, compressed) and the icons (about 3 KB) are small.
-* Code that is rarely used (NOR flash management on Chis, the clock, the DSi carousel) could be
-  run from the SDRAM or loaded on demand, but that needs a linker and loader change and costs
-  speed. It isn't needed now that the strings are out.
