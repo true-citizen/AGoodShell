@@ -34,8 +34,8 @@ but this fork recommends a different main method, described below.
 The firmware is too big for the flash of SuperCard/SuperChis due to added features, 
 so the recommended setup is split in two:
 
- 1. Flash the tiny **Thumbstart** bootloader (`thumbstart.gba`, built with
-    `make BOARD=<chis|sd|lite> thumbstart.gba`, see docs/thumbstart.md) into
+ 1. Flash the tiny **Thumbstart** bootloader (`thumbstart.fw`, built with
+    `make BOARD=<chis|sd|lite> thumbstart.fw`, see docs/thumbstart.md) into
     the cartridge's flash. It is only a few KB.
  2. Copy the firmware to the **root of the SD card** with the name `sfw.gba`
     (`SFW.GBA`). Thumbstart loads it from there on every boot (chain-loading).
@@ -99,7 +99,7 @@ https://patchtool.superfw.davidgf.net/
 Special AGoodShell++ features
 ------------
 AGoodShell++ contains functionalities not present in original SuperFW:
- - Opening .mp3, .png, .gif, .jpg, .bmp files
+ - Opening .mp3, .png, .gif, .jpg, files
  - DSi-like file manager with icons and Cartridge-art mode of file manager that supports GBA and all emulated consoles cartridge arts. (Cartridge art images are not included). Please read https://github.com/true-citizen/AGoodShell/blob/master/docs/cartridges.md
  - DS menu and calendar
  - Dark/Light theme
