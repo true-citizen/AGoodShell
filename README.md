@@ -1,8 +1,12 @@
 AGoodShell++
 =======
-<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/3955d53a-bc4f-4798-a688-cd228da6346e" />
-<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/9126b365-0606-4bbb-95a9-eb6bec7b0b3c" />
-<img width="240" height="160" alt="image" src="https://github.com/user-attachments/assets/43cc5534-1b53-4c35-878a-40c3fba47caf" />
+<img width="240" height="160" alt="menu-screen" src="https://github.com/user-attachments/assets/2da87b1d-3446-4bac-9464-aea11a1ac60c" />
+<img width="240" height="160" alt="calendar-screen" src="https://github.com/user-attachments/assets/3807c127-fd14-4d27-9f2c-5b08dc8aa927" />
+<img width="240" height="160" alt="menu-dark" src="https://github.com/user-attachments/assets/d779009b-ee99-41f7-a905-ffdfd262c865" />
+<img width="240" height="160" alt="dsi-menu" src="https://github.com/user-attachments/assets/7fbd556a-daf3-46c1-ae7c-3cb54e21608a" />
+<img width="240" height="160" alt="cart-menu" src="https://github.com/user-attachments/assets/c837e637-b183-4480-a30e-475c16bf289e" />
+<img width="240" height="160" alt="media-player" src="https://github.com/user-attachments/assets/da64d2d5-8778-45e5-bcc7-441ee5269b54" />
+<img width="240" height="160" alt="about-screen" src="https://github.com/user-attachments/assets/79b29954-a044-422f-a9c8-e9978b419dae" />
 
 A fork of SuperFW firmware for Supercard GBA flash carts (and derivatives/clones)
 
@@ -27,8 +31,8 @@ but this fork recommends a different main method, described below.
 
 ### Recommended: Thumbstart bootloader + sfw.gba on the SD card
 
-The firmware is too big for the flash of SuperCard/SuperChis once the carousel
-art and DSi-style UI are included, so the recommended setup is split in two:
+The firmware is too big for the flash of SuperCard/SuperChis due to added features, 
+so the recommended setup is split in two:
 
  1. Flash the tiny **Thumbstart** bootloader (`thumbstart.gba`, built with
     `make BOARD=<chis|sd|lite> thumbstart.gba`, see docs/thumbstart.md) into
@@ -38,30 +42,13 @@ art and DSi-style UI are included, so the recommended setup is split in two:
     `make BOARD=<chis|sd|lite> sdcard` builds everything and lays it out in an
     `sdcard/` folder that you can copy to the card as it is. It contains `SFW.GBA`
     and the translations (`.superfw/lang/*.lng`, one file per language; without
-    them the menu is in English).
+    them the menu is in English). 
 
 Flash Thumbstart the same way you would flash any other firmware (see below:
 from the Info tab of a running SuperFW/SCFW, or using an NDS). After that,
 updating is just replacing `sfw.gba` on the SD card, no flashing needed. This
-also removes the flash size limit: all builds have all features (both carousel
-styles, all cartridge pictures, all emulators) whatever the cartridge. See
-docs/sd-boot.md.
-
-Note: the Thumbstart path has had little testing on real hardware, so keep an
-NDS and a Slot-1 cart around to restore a working firmware if needed.
-
-### Discouraged: flashing the firmware directly
-
-Flashing the full firmware (.fw) straight into the cartridge is still possible
-but **discouraged**: the image must fit in the flash (the SD and Lite builds
-have features trimmed for that, e.g. the DSi carousel is not available on the
-SD build; build it with `make SDBOOT=0`), every update needs a new flash, and an interrupted flash can brick
-the cart.
-
-The firmware can be chain-loaded using another firmware (ie. the default
-SuperCard firmware or SCFW) and loaded as a regular game. To flash it, load it
-first, then use it to flash itself: enable flashing in the Info tab and pick
-the .fw file. It is strongly recommended to reboot your GBA after flashing.
+also removes risks related to repeated flashing and the flash size limit: 
+all builds have all features for any cartridge. See docs/sd-boot.md. 
 
 ### Recovery / flashing with an NDS
 
@@ -108,6 +95,15 @@ These patches are generated mostly automatically, check out the patch repo at:
 https://github.com/davidgfnet/gba-patch-gen
 It is also possible to use the web-based patch generator for better patches:
 https://patchtool.superfw.davidgf.net/
+
+Special AGoodShell++ features
+------------
+AGoodShell++ contains functionalities not present in original SuperFW:
+ - Opening .mp3, .png, .gif, .jpg, .bmp files
+ - DSi-like file manager with icons and Cartridge-art mode of file manager that supports GBA and all emulated consoles cartridge arts. (Cartridge art images are not included). Please read https://github.com/true-citizen/AGoodShell/blob/master/docs/cartridges.md
+ - DS menu and calendar
+ - Dark/Light theme
+ - Revised settings menu
 
 In-game menu
 ------------
@@ -181,6 +177,8 @@ constraints:
  - Maximum ROM size: 32MiB (Supercard's memory size)
  - File path and name limit: 255 utf-8 bytes (not exactly characters!)
  - Maximum number of files+dirs in a directory: 16384
+ - MP3 player can't play audio in quality higher than Mono 8 KHz 16 kbps
+ - I don't recommend opening .bmp, .jpg, .gif, .png images in high-resolutions to avoid any problems from that
 </details>
 
 Licenses
