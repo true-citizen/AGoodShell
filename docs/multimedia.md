@@ -1,4 +1,4 @@
-# Media: MP3 playback and picture viewer (experimental, `multimedia` branch)
+# Media: MP3 playback and picture viewer
 
 Real MP3 decoding on the GBA's ARM7TDMI (16.78 MHz, no FPU) is possible, but only for small streams.
 MP3 playback is not intended to serious functionality, so beware that it will stutter
