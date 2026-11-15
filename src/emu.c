@@ -22,6 +22,7 @@
 
 #include "emu.h"
 #include "util.h"
+#include "settings.h"
 
 #pragma GCC optimize ("Os")
 
@@ -230,6 +231,46 @@ const t_emu_loader pce_loaders[] = {
   { NULL, NULL },
 };
 
+// Media player (media/): a standalone ROM that finds this header right after itself, then the
+// file. It plays .mp3 files and shows .png, .jpg and .gif pictures.
+typedef struct {
+  char magic[4];
+  uint32_t size;
+  char title[32];
+  uint16_t bg, ft, grid, dark;     // Theme colors, so the grid looks like the menu's
+} t_media_header;
+
+static unsigned media_header(uint8_t *buffer, const char *fn, unsigned fs, const char *magic) {
+  t_media_header hdr;
+  memset(&hdr, 0, sizeof(hdr));
+  memcpy(hdr.magic, magic, 4);
+  const t_theme_colors *th = &themes[menu_theme < THEME_COUNT ? menu_theme : 0];
+  hdr.dark = menu_theme == THEME_COUNT - 1;
+  hdr.bg = th->bg_color;
+  hdr.ft = th->ft_color;
+  hdr.grid = hdr.dark ? 0 : th->hi_color;
+  hdr.size = fs;
+  const char *bname = file_basename(fn);
+  memcpy(hdr.title, bname, sizeof(hdr.title) - 1);
+  memcpy32(buffer, &hdr, sizeof(hdr));
+  return sizeof(hdr);
+}
+
+unsigned mp3_header(uint8_t *buffer, const char *fn, unsigned fs) { return media_header(buffer, fn, fs, "AMP3"); }
+unsigned img_header(uint8_t *buffer, const char *fn, unsigned fs) { return media_header(buffer, fn, fs, "AIMG"); }
+
+const t_emu_loader mp3_loaders[] = {
+  { "mediaplayer", mp3_header },
+  { "vfs:MEDI", mp3_header },
+  { NULL, NULL },
+};
+
+const t_emu_loader img_loaders[] = {
+  { "mediaplayer", img_header },
+  { "vfs:MEDI", img_header },
+  { NULL, NULL },
+};
+
 const t_emu_loader gbc_loaders[] = {
   { "gbc-emu", NULL },
   { "vfs:GCEM", NULL },
@@ -248,6 +289,11 @@ const t_emu_platform emu_platforms[] = {
   {"sv",  sv_loaders},
   {"ngc", ngc_loaders},
   {"pce", pce_loaders},
+  {"mp3", mp3_loaders},
+  {"png", img_loaders},
+  {"jpg", img_loaders},
+  {"jpeg", img_loaders},
+  {"gif", img_loaders},
   {NULL, NULL},        // End marker!
 };
 

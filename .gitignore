@@ -16,3 +16,5 @@ lang/
 sdcard/
 res/splash.raw
 res/splash.pal
+obj-media/
+emu/mediaplayer.gba.bin

@@ -762,6 +762,15 @@ assets_start:
   .balign 4
   #endif
 
+  #ifdef BUNDLE_MEDIA_PLAYER
+  .ascii "MEDI"
+  .word (media_emu_end - media_emu_start)
+  media_emu_start:
+    .incbin "emu/mediaplayer.gba.comp"
+  media_emu_end:
+  .balign 4
+  #endif
+
   .word 0               @ End of asset list
   .word 0
 assets_end:
