@@ -1,8 +1,8 @@
 AGoodShell++
 =======
-<img width="240" height="160" alt="menu-screen" src="https://github.com/user-attachments/assets/2da87b1d-3446-4bac-9464-aea11a1ac60c" />
+<img width="240" height="160" alt="menu-light" src="https://github.com/user-attachments/assets/82197ff7-2af9-473c-999b-541764598bc2" />
 <img width="240" height="160" alt="calendar-screen" src="https://github.com/user-attachments/assets/3807c127-fd14-4d27-9f2c-5b08dc8aa927" />
-<img width="240" height="160" alt="menu-dark" src="https://github.com/user-attachments/assets/d779009b-ee99-41f7-a905-ffdfd262c865" />
+<img width="240" height="160" alt="menu-dark" src="https://github.com/user-attachments/assets/29527606-dc91-475e-a84c-2252405f324b" />
 <img width="240" height="160" alt="dsi-menu" src="https://github.com/user-attachments/assets/7fbd556a-daf3-46c1-ae7c-3cb54e21608a" />
 <img width="240" height="160" alt="cart-menu" src="https://github.com/user-attachments/assets/c837e637-b183-4480-a30e-475c16bf289e" />
 <img width="240" height="160" alt="media-player" src="https://github.com/user-attachments/assets/da64d2d5-8778-45e5-bcc7-441ee5269b54" />
