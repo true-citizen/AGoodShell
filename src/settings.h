@@ -72,6 +72,7 @@ typedef struct {
 extern uint8_t menu_theme;
 extern uint8_t lang_id;
 extern uint8_t recent_menu;
+extern uint8_t sfx_enable;     // Menu sound effects
 extern uint8_t hide_hidden;
 extern uint8_t anim_speed;
 extern uint8_t carousel_classic;      // 1 for the classic (DSi style) carousel, 0 for cartridges

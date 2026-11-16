@@ -42,6 +42,8 @@
 #include "res/icons.h"
 #include "res/logo.h"
 #include "res/home_icons.h"
+#include "res/gbaflash_icon.h"
+#include "res/home_icons32.h"
 #include "cartridge.h"
 
 extern t_card_info sd_info;
@@ -138,6 +140,7 @@ enum {
 #define BL_EDGE          134
 #define GR_DOT           135
 #define CART_FILL        (PL_BASE + 4)   // Label window of cartridges that have no box art (light gray)
+#define GBAFLASH_BASE    112     // Internal flash icon colors (113..115)
 #define HOME_ICON_BASE   95      // Palette of the TWiLight Menu++ corner icons (bitmap index i -> 95 + i)
 
 // Sound registers (PSG noise channel), used for the clock tick.
@@ -165,8 +168,9 @@ enum {
   UiSetAccent = 5,
   UiSetCarou = 6,
   UiSetName  = 7,
-  UiSetSave  = 8,
-  UiSetMAX   = 8,
+  UiSetSfx   = 8,
+  UiSetSave  = 9,
+  UiSetMAX   = 9,
 };
 
 // Accent colors, the 16 favorite colors of the DS.
@@ -430,9 +434,12 @@ static struct {
   // Home screen
   struct {
     int sel;                      // Selected button (HB_*)
-    int row2;                     // Middle row button to return to (HB_RECENT/HB_HWTEST)
+    int row2;                     // Middle row button to return to (HB_RECENT/HB_CAROUSEL)
     int sx0, sy0, sx1, sy1;       // Animated selector frame (8.8 fixed point)
     bool sinit;                   // The selector frame was placed on its first button
+    bool anim;                    // A button is rolling up before its action runs
+    int anim_b;                   // ... which one (HB_*)
+    int anim_dy;                  // ... and how far it has moved (negative, pixels)
   } home;
 } smenu;
 
@@ -2205,7 +2212,7 @@ static const uint8_t bg_tiles[BG_COUNT][2] = { { 16, 16 }, { 48, 48 } };
 // Grid lines sit at x + offset multiple of the tile width: the clock tab grid is
 // shifted 8 pixels left and the home grid 24 pixels left.
 static const uint8_t bg_xoff[BG_COUNT] = { 8, 24 };
-static const uint8_t bg_yoff[BG_COUNT] = { 8, 0 };     // The clock tab grid is also shifted 8 pixels down
+static const uint8_t bg_yoff[BG_COUNT] = { 8, 24 };    // Grid line offsets in rows: the home grid is half a tile (24) below its first line
 static uint16_t bg_rows[BG_COUNT][4][SCREEN_WIDTH / 2];   // Bit 0: odd row, bit 1: grid line
 
 static void bg_init(void) {
@@ -2420,12 +2427,12 @@ void render_clock(volatile uint8_t *frame) {
 // ---------------------------------------------------------------------------
 
 void reload_theme(unsigned thnum);
+static bool recent_available(void);
 
 enum {
   HB_FLASH = 0,      // Games stored in the cart flash (fast loading ROMs)
   HB_RECENT,         // Recent games tab
-  HB_HWTEST,         // Hardware test (tools) tab
-  HB_CAROUSEL,       // Opens the carousel
+  HB_CAROUSEL,       // Opens the carousel (file browser)
   HB_THEME,          // Switches the light/dark theme
   HB_SETTINGS,       // Opens the settings tabs (settings, UI settings, about)
   HB_TIME,           // Sets the clock
@@ -2433,14 +2440,12 @@ enum {
 };
 
 // Buttons sit on the 48x48 tile grid of the background (lines at x = 24 + 48k,
-// shifted 24 pixels left so 4 tiles are centered; y = 16 + 48k), 2 pixels in
-// from the grid lines: flash games and the carousel are 4 tiles wide, recent
-// games and hardware test 2 each.
+// shifted 24 pixels left so 4 tiles are centered; y = 40 + 48k, half a tile down
+// from the top of the area), 2 pixels in from the grid lines: flash games are 4 tiles wide, recent games and the browser 2 each.
 static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
-  [HB_FLASH]    = {  26,  18, 214,  62 },
-  [HB_RECENT]   = {  26,  66, 118, 110 },
-  [HB_HWTEST]   = { 122,  66, 214, 110 },
-  [HB_CAROUSEL] = {  26, 114, 214, 136 },
+  [HB_FLASH]    = {  26,  42, 214,  86 },
+  [HB_RECENT]   = {  26,  90, 118, 134 },
+  [HB_CAROUSEL] = { 122,  90, 214, 134 },
   [HB_THEME]    = {   2, 138,  22, 158 },
   [HB_SETTINGS] = { 110, 138, 130, 158 },
   [HB_TIME]     = { 218, 138, 238, 158 },
@@ -2449,12 +2454,11 @@ static const struct { int16_t x0, y0, x1, y1; } home_rects[HB_COUNT] = {
 // Where each button leads to with up, down, left, right (-1: nowhere).
 static const int8_t home_nav[HB_COUNT][4] = {
   [HB_FLASH]    = { -1,          HB_RECENT,   -1,          -1 },
-  [HB_RECENT]   = { HB_FLASH,    HB_CAROUSEL, -1,          HB_HWTEST },
-  [HB_HWTEST]   = { HB_FLASH,    HB_CAROUSEL, HB_RECENT,   -1 },
-  [HB_CAROUSEL] = { HB_RECENT,   HB_SETTINGS, -1,          -1 },
-  [HB_THEME]    = { HB_CAROUSEL, -1,          -1,          HB_SETTINGS },
-  [HB_SETTINGS] = { HB_CAROUSEL, -1,          HB_THEME,    HB_TIME },
-  [HB_TIME]     = { HB_CAROUSEL, -1,          HB_SETTINGS, -1 },
+  [HB_RECENT]   = { HB_FLASH,    HB_SETTINGS, -1,          HB_CAROUSEL },
+  [HB_CAROUSEL] = { HB_FLASH,    HB_SETTINGS, HB_RECENT,   -1 },
+  [HB_THEME]    = { HB_RECENT,   -1,          -1,          HB_SETTINGS },
+  [HB_SETTINGS] = { HB_RECENT,   -1,          HB_THEME,    HB_TIME },
+  [HB_TIME]     = { HB_RECENT,   -1,          HB_SETTINGS, -1 },
 };
 
 static int isqrt_floor(int v) {
@@ -2462,39 +2466,6 @@ static int isqrt_floor(int v) {
   while ((w + 1) * (w + 1) <= v)
     w++;
   return w;
-}
-
-// Filled circle.
-static void home_disc(volatile uint8_t *frame, int cx, int cy, int r, uint8_t color) {
-  for (int dy = -r; dy <= r; dy++) {
-    const int w = isqrt_floor(r * r - dy * dy);
-    car_span(frame, cy + dy, cx - w, cx + w + 1, color);
-  }
-}
-
-// Ring (circle with a hole, which stays transparent). Rows in [gy0, gy1) skip
-// everything left of gx1, to leave a gap in the ring.
-static void home_ring(volatile uint8_t *frame, int cx, int cy, int ro, int ri, uint8_t color,
-                      int gx1, int gy0, int gy1) {
-  for (int dy = -ro; dy <= ro; dy++) {
-    const int wo = isqrt_floor(ro * ro - dy * dy);
-    int segs[2][2];
-    int n = 0;
-    if (dy >= -ri && dy <= ri) {
-      const int wi = isqrt_floor(ri * ri - dy * dy);
-      segs[n][0] = cx - wo; segs[n][1] = cx - wi; n++;
-      segs[n][0] = cx + wi + 1; segs[n][1] = cx + wo + 1; n++;
-    } else {
-      segs[n][0] = cx - wo; segs[n][1] = cx + wo + 1; n++;
-    }
-    for (int i = 0; i < n; i++) {
-      int x0 = segs[i][0];
-      if (cy + dy >= gy0 && cy + dy < gy1 && x0 < gx1)
-        x0 = gx1;
-      if (x0 < segs[i][1])
-        car_span(frame, cy + dy, x0, segs[i][1], color);
-    }
-  }
 }
 
 // Circle minus another circle, to draw a crescent without painting over anything.
@@ -2575,47 +2546,21 @@ static void home_brackets(volatile uint8_t *frame, int b) {
   car_rect(frame, x1 - th, y1 - len, x1, y1, ACC_COLOR);
 }
 
-// Small cartridge (24x16) for the carousel button: outlines, transparent inside.
-static void home_icon_cart_small(volatile uint8_t *frame, int x, int y) {
-  car_rect(frame, x + 3, y, x + 21, y + 3, FT_COLOR);
-  car_outline(frame, x, y + 3, x + 24, y + 16, 2, FT_COLOR);
-  car_outline(frame, x + 6, y + 7, x + 18, y + 12, 1, FT_COLOR);
-}
-
-// Recent games: a history clock (ring with a gap and an arrow head), 32x32.
-static void home_icon_recent(volatile uint8_t *frame, int x, int y) {
-  const int cx = x + 16, cy = y + 16;
-  home_ring(frame, cx, cy, 14, 11, FT_COLOR, x + 9, y + 8, y + 15);
-  car_rect(frame, x + 2, y + 12, x + 9, y + 14, FT_COLOR);        // Arrow head (pointing down)
-  car_rect(frame, x + 3, y + 14, x + 8, y + 15, FT_COLOR);
-  car_rect(frame, x + 4, y + 15, x + 7, y + 16, FT_COLOR);
-  car_rect(frame, cx - 1, cy - 8, cx + 1, cy + 1, FT_COLOR);      // Hands
-  car_rect(frame, cx - 1, cy, cx + 6, cy + 2, FT_COLOR);
-}
-
-// Hardware test: a gear (ring with teeth), sz x sz.
-static void home_icon_gear(volatile uint8_t *frame, int x, int y, int sz) {
-  const int cx = x + sz / 2, cy = y + sz / 2;
-  const int ro = sz * 11 / 32, ri = MAX(2, sz * 5 / 32), tw = MAX(2, sz * 3 / 32), to = sz * 15 / 32;
-  home_ring(frame, cx, cy, ro, ri, FT_COLOR, 0, 0, 0);
-  car_rect(frame, cx - tw, cy - to, cx + tw, cy - ro + 2, FT_COLOR);     // Teeth
-  car_rect(frame, cx - tw, cy + ro - 2, cx + tw, cy + to, FT_COLOR);
-  car_rect(frame, cx - to, cy - tw, cx - ro + 2, cy + tw, FT_COLOR);
-  car_rect(frame, cx + ro - 2, cy - tw, cx + to, cy + tw, FT_COLOR);
-  const int dd = sz * 10 / 32, ds = MAX(1, sz / 16);
-  for (int i = -1; i <= 1; i += 2)
-    for (int j = -1; j <= 1; j += 2)
-      car_rect(frame, cx + i * dd - ds, cy + j * dd - ds, cx + i * dd + ds, cy + j * dd + ds, FT_COLOR);
-  home_disc(frame, cx, cy, MAX(1, sz / 16), FT_COLOR);
-}
-
-static void home_icon_chip(volatile uint8_t *frame, int x, int y) {
-  for (int i = 0; i < 4; i++) {                       // Pins on both sides
-    car_rect(frame, x + 4, y + 2 + i * 5, x + 8, y + 4 + i * 5, FT_COLOR);
-    car_rect(frame, x + 24, y + 2 + i * 5, x + 28, y + 4 + i * 5, FT_COLOR);
+// Button icons with their own fixed colors (white, two grays; inverted in the dark theme, see
+// reload_theme). Index 0 is transparent. Internal flash: a GBA cartridge, in the second part of
+// the image when the flash is empty or not accessible.
+static void home_icon_img(volatile uint8_t *frame, int x, int y, const uint8_t *img, int w, int h) {
+  for (int r = 0; r < h; r++) {
+    const uint8_t *row = &img[r * w];
+    for (int c = 0; c < w; ) {
+      if (!row[c]) { c++; continue; }
+      int e = c;
+      while (e < w && row[e] == row[c])
+        e++;
+      car_rect(frame, x + c, y + r, x + e, y + r + 1, GBAFLASH_BASE + row[c]);
+      c = e;
+    }
   }
-  car_outline(frame, x + 8, y, x + 24, y + 22, 2, FT_COLOR);
-  car_outline(frame, x + 12, y + 5, x + 20, y + 17, 1, FT_COLOR);
 }
 
 // Small icons for the bottom buttons, centered at (cx, cy).
@@ -2743,55 +2688,109 @@ static void render_infobar(volatile uint8_t *frame) {
   bar_icon_battery(frame, BAR_ICONS_X + 32);
 }
 
+// Draws one home button (face and content) with absolute screen coordinates.
+static void home_draw_button(volatile uint8_t *frame, int b) {
+  char buf[24];
+  const int x0 = home_rects[b].x0, y0 = home_rects[b].y0, x1 = home_rects[b].x1, y1 = home_rects[b].y1;
+  switch (b) {
+  case HB_FLASH:
+    // Flash games: games written to the cart memory (fast loading ROMs).
+    home_button(frame, b);
+    #ifdef SUPPORT_NORGAMES
+    home_icon_img(frame, x0 + 6, y0 + 12, gbaflash_icons[smenu.fbrowser.maxentries > 0 ? 0 : 1], GBAFLASH_ICON_W, GBAFLASH_ICON_H);
+    #else
+    home_icon_img(frame, x0 + 6, y0 + 12, gbaflash_icons[1], GBAFLASH_ICON_W, GBAFLASH_ICON_H);
+    #endif
+    home_plate(frame, x0 + 44, y0 + 4, x1 - 4, y1 - 4);
+    draw_central_text("Internal Flash", frame, (x0 + 44 + x1 - 4) / 2, y0 + 6);
+    #ifdef SUPPORT_NORGAMES
+    npf_snprintf(buf, sizeof(buf), "%u games", (unsigned)smenu.fbrowser.maxentries);
+    #else
+    npf_snprintf(buf, sizeof(buf), "Not available");
+    #endif
+    draw_central_text(buf, frame, (x0 + 44 + x1 - 4) / 2, y0 + 22);
+    break;
+  case HB_RECENT:
+    // Recent games (two tiles wide): icon and a two line label.
+    home_button(frame, b);
+    home_icon_img(frame, x0 + 5, y0 + 6, home_recent_icons[recent_available() ? 0 : 1], 32, 32);
+    home_plate(frame, x0 + 42, y0 + 4, x1 - 4, y1 - 4);
+    draw_central_text("Recent", frame, (x0 + 42 + x1 - 4) / 2, y0 + 6);
+    draw_central_text("games", frame, (x0 + 42 + x1 - 4) / 2, y0 + 22);
+    break;
+  case HB_CAROUSEL:
+    // Browser (two tiles wide): SD card icon and a one line label.
+    home_button(frame, b);
+    home_icon_img(frame, x0 + 5, y0 + 6, home_sd_icons[0], 32, 32);
+    home_plate(frame, x0 + 42, y0 + 4, x1 - 4, y1 - 4);
+    draw_central_text("Browser", frame, (x0 + 42 + x1 - 4) / 2, y0 + 14);
+    break;
+  default: {
+    // Bottom row: theme, settings and time.
+    static void (*const icons[HB_COUNT - HB_THEME])(volatile uint8_t*, int, int) = {
+      home_icon_theme, home_icon_settings, home_icon_time,
+    };
+    icons[b - HB_THEME](frame, (x0 + x1) / 2, 148);
+  }
+  }
+}
+
+// Rolling button: like TWiLight Menu++ the pressed button moves up the screen, 6 pixels per frame,
+// until it is gone. It is drawn to a scratch buffer and copied with clipping so it slides
+// under the information bar instead of over it. The scratch rows start at home_rects[].y0 - HOME_ROLL_PAD.
+#define HOME_ROLL_PAD   4
+#define HOME_ROLL_ROWS  (48 + 2 * HOME_ROLL_PAD)
+#define HOME_ROLL_SPEED 6
+#define HOME_BAR_ROWS   16
+__attribute__((section(".ewram"))) static uint8_t home_roll_buf[HOME_ROLL_ROWS * SCREEN_WIDTH];   // In EWRAM: IWRAM is full
+
+static void home_draw_rolling(volatile uint8_t *frame, int b, int dy) {
+  const int ry0 = home_rects[b].y0 - HOME_ROLL_PAD, ry1 = home_rects[b].y1 + HOME_ROLL_PAD;
+  const int rx0 = (home_rects[b].x0 - HOME_ROLL_PAD) & ~1, rx1 = (home_rects[b].x1 + HOME_ROLL_PAD + 1) & ~1;
+  memset(home_roll_buf, 0, (ry1 - ry0) * SCREEN_WIDTH);   // Index 0 stays transparent
+  home_draw_button(home_roll_buf - ry0 * SCREEN_WIDTH, b);
+  for (int y = ry0; y < ry1; y++) {
+    const int dst = y + dy;
+    if (dst < HOME_BAR_ROWS || dst >= SCREEN_HEIGHT)
+      continue;
+    const uint8_t *src = &home_roll_buf[(y - ry0) * SCREEN_WIDTH];
+    volatile uint16_t *out = (volatile uint16_t*)&frame[dst * SCREEN_WIDTH];
+    for (int x = rx0; x < rx1 && x < SCREEN_WIDTH; x += 2) {
+      const unsigned lo = src[x], hi = src[x + 1];
+      if (lo && hi)
+        out[x >> 1] = lo | (hi << 8);
+      else if (lo)
+        out[x >> 1] = (out[x >> 1] & 0xFF00) | lo;
+      else if (hi)
+        out[x >> 1] = (out[x >> 1] & 0x00FF) | (hi << 8);
+    }
+  }
+}
+
+static void home_activate(int b);
+
 void render_home(volatile uint8_t *frame) {
   ds_background(frame, BG_HOME);
 
-  for (int b = HB_FLASH; b <= HB_CAROUSEL; b++)
-    home_button(frame, b);
+  const bool rolling = smenu.home.anim;
+  for (int b = HB_FLASH; b <= HB_TIME; b++)
+    if (!rolling || b != smenu.home.anim_b)
+      home_draw_button(frame, b);
 
-  char buf[24];
-  int x0, y0, x1, y1;
+  if (!rolling) {
+    home_brackets(frame, smenu.home.sel);
+    return;
+  }
 
-  // Flash games: games written to the cart memory (fast loading ROMs).
-  x0 = home_rects[HB_FLASH].x0; y0 = home_rects[HB_FLASH].y0; x1 = home_rects[HB_FLASH].x1; y1 = home_rects[HB_FLASH].y1;
-  home_icon_chip(frame, x0 + 8, y0 + 11);
-  home_plate(frame, x0 + 44, y0 + 4, x1 - 4, y1 - 4);
-  draw_central_text("Internal Flash", frame, (x0 + 44 + x1 - 4) / 2, y0 + 6);
-  #ifdef SUPPORT_NORGAMES
-  npf_snprintf(buf, sizeof(buf), "%u games", (unsigned)smenu.fbrowser.maxentries);
-  #else
-  npf_snprintf(buf, sizeof(buf), "Not available");
-  #endif
-  draw_central_text(buf, frame, (x0 + 44 + x1 - 4) / 2, y0 + 22);
-
-  // Recent games (two tiles wide): icon and a two line label.
-  x0 = home_rects[HB_RECENT].x0; y0 = home_rects[HB_RECENT].y0; x1 = home_rects[HB_RECENT].x1; y1 = home_rects[HB_RECENT].y1;
-  home_icon_recent(frame, x0 + 5, y0 + 6);
-  home_plate(frame, x0 + 42, y0 + 4, x1 - 4, y1 - 4);
-  draw_central_text("Recent", frame, (x0 + 42 + x1 - 4) / 2, y0 + 6);
-  draw_central_text("games", frame, (x0 + 42 + x1 - 4) / 2, y0 + 22);
-
-  // Hardware test (two tiles wide): icon on the left, two line label on the right.
-  x0 = home_rects[HB_HWTEST].x0; y0 = home_rects[HB_HWTEST].y0; x1 = home_rects[HB_HWTEST].x1; y1 = home_rects[HB_HWTEST].y1;
-  home_icon_gear(frame, x0 + 8, y0 + 10, 24);
-  home_plate(frame, x0 + 42, y0 + 4, x1 - 4, y1 - 4);
-  draw_central_text("HW", frame, (x0 + 42 + x1 - 4) / 2, y0 + 6);
-  draw_central_text("test", frame, (x0 + 42 + x1 - 4) / 2, y0 + 22);
-
-  // Carousel (four tiles wide).
-  x0 = home_rects[HB_CAROUSEL].x0; y0 = home_rects[HB_CAROUSEL].y0; x1 = home_rects[HB_CAROUSEL].x1; y1 = home_rects[HB_CAROUSEL].y1;
-  home_icon_cart_small(frame, x0 + 8, y0 + 3);
-  home_plate(frame, x0 + 38, y0 + 3, x1 - 4, y1 - 3);
-  draw_central_text("Browser", frame, (x0 + 38 + x1 - 4) / 2, y0 + 3);
-
-  // Bottom row: theme, settings and time.
-  static void (*const icons[HB_COUNT - HB_THEME])(volatile uint8_t*, int, int) = {
-    home_icon_theme, home_icon_settings, home_icon_time,
-  };
-  for (int b = HB_THEME; b <= HB_TIME; b++)
-    icons[b - HB_THEME](frame, (home_rects[b].x0 + home_rects[b].x1) / 2, 148);
-
-  home_brackets(frame, smenu.home.sel);
+  const int b = smenu.home.anim_b;
+  unsigned frames = render_fcnt > 4 ? 4 : render_fcnt;
+  smenu.home.anim_dy -= HOME_ROLL_SPEED * (int)frames;
+  home_draw_rolling(frame, b, smenu.home.anim_dy);
+  if (home_rects[b].y1 + HOME_ROLL_PAD + smenu.home.anim_dy <= HOME_BAR_ROWS) {
+    // Gone: run the action now.
+    smenu.home.anim = false;
+    home_activate(b);
+  }
 }
 
 void render_fw_flash_popup(volatile uint8_t *frame) {
@@ -3322,6 +3321,7 @@ void render_ui_settings(volatile uint8_t *frame) {
   prow_add("Accent color", tmpbuf, ROW_OPT);
   prow_add("Carousel", !CLASSIC_AVAILABLE ? "Cartridge" : carousel_classic ? "< DSi >" : "< Cartridge >", ROW_OPT);
   prow_add("User name", smenu.uiset.editing ? user_name : (user_name[0] ? user_name : "-"), ROW_OPT);
+  prow_add("SFX", msgs[lang_id][sfx_enable ? MSG_KNOB_ENABLED : MSG_KNOB_DISABLED], ROW_OPT);
   prow_add(msgs[lang_id][MSG_UIS_SAVE], NULL, ROW_BTN);
 
   page_chrome(frame, "UI settings");
@@ -3406,14 +3406,11 @@ void render_info(volatile uint8_t *frame) {
 }
 
 void render_tools(volatile uint8_t *frame) {
+  prow_n = 0;
   for (unsigned i = 0; i < ToolsMAX; i++)
-    draw_text_ovf(msgs[lang_id][MSG_TOOLS0_SDRAM + i], frame, 22, 26 + 22 * i, 144);
-
-  smenu.anim_state = (smenu.anim_state + 1) & 255;
-  draw_central_text("▸", frame, 11 + (smenu.anim_state >> 6), 26 + 22 * smenu.tools.selector);
-
-  for (unsigned i = 0; i < 240; i += 16)
-    render_icon_trans(i, 26 + smenu.tools.selector * 22, 63);
+    prow_add(msgs[lang_id][MSG_TOOLS0_SDRAM + i], NULL, ROW_BTN);
+  page_chrome(frame, "Hardware test");
+  page_list(frame, smenu.tools.selector, "A: run the selected test");
 }
 
 void reload_theme(unsigned thnum) {
@@ -3504,6 +3501,8 @@ void reload_theme(unsigned thnum) {
   MEM_PALETTE[SL_GRID] = mix15(grid, themes[thnum].ft_color, 14);
   for (unsigned i = 0; i < HOME_ICON_COLORS; i++)
     MEM_PALETTE[HOME_ICON_BASE + 1 + i] = home_icon_pal[i];
+  for (unsigned i = 0; i < 3; i++)   // Icon colors, inverted in the dark theme
+    MEM_PALETTE[GBAFLASH_BASE + 1 + i] = dark ? gbaflash_pal[i] ^ 0x7FFF : gbaflash_pal[i];
   MEM_PALETTE[BTN_EDGE] = dark ? themes[thnum].fg_color : themes[thnum].ft_color;
   // Button gradient: lighter at the top (darker in the dark theme), many shades.
   {
@@ -3545,26 +3544,59 @@ static bool recent_available(void) {
   return recent_menu && smenu.recent.maxentries;
 }
 
+// Sound effects on the PSG noise channel. The sound hardware is only powered while the clock
+// tab is open or for a moment after an effect.
+enum { SfxMove, SfxLightOn, SfxLightOff };
+static bool snd_on;
+static unsigned snd_idle;       // Frames since the last sound
+
+static void snd_enable(void) {
+  if (!snd_on) {
+    SNDCNT_X = 0x80;               // Master enable
+    SNDCNT_L = 0x8855;             // Noise channel to both sides, volume 5/7
+    SNDCNT_H = 2;                  // PSG at 100%
+    snd_on = true;
+  }
+  snd_idle = 0;
+}
+
+static void sfx_play(unsigned kind) {
+  if (!sfx_enable)
+    return;
+  snd_enable();
+  switch (kind) {
+  case SfxMove:       // Soft short click of the selector
+    SND4_L = (7 << 12) | (1 << 8) | 61;
+    SND4_H = 0x8000 | 0x4000 | (1 << 4) | 1;
+    break;
+  case SfxLightOn:    // Crisp, high switch click
+    SND4_L = (15 << 12) | (1 << 8) | 56;
+    SND4_H = 0x8000 | 0x4000 | (0 << 4) | 1;
+    break;
+  default:            // Duller, lower click
+    SND4_L = (15 << 12) | (2 << 8) | 52;
+    SND4_H = 0x8000 | 0x4000 | (4 << 4) | 3;
+    break;
+  }
+}
+
 // Clock tick: a very short noise burst on the PSG every second, only while
-// the clock tab is open. The sound hardware is switched off otherwise.
+// the clock tab is open. The sound hardware is switched off when idle.
 static void clock_tick_update(void) {
-  static bool snd_on;
   static uint32_t last_ts;
   if (smenu.menu_tab == MENUTAB_CLOCK) {
     const uint32_t ts = clock_now();
     if (!snd_on) {
-      SNDCNT_X = 0x80;               // Master enable
-      SNDCNT_L = 0x8855;             // Noise channel to both sides, volume 5/7
-      SNDCNT_H = 2;                  // PSG at 100%
-      snd_on = true;
+      snd_enable();
       last_ts = ts;
     }
+    snd_idle = 0;
     if (ts != last_ts) {
       last_ts = ts;
       SND4_L = (10 << 12) | (1 << 8) | 58;                      // Volume 10, fast decay, ~23ms length
       SND4_H = 0x8000 | 0x4000 | ((ts & 1) ? (3 << 4) : (2 << 4)) | 1;   // Tick and tock pitches
     }
-  } else if (snd_on) {
+  } else if (snd_on && ++snd_idle > 30) {
     SNDCNT_X = 0;
     snd_on = false;
   }
@@ -3583,7 +3615,7 @@ void menu_render(unsigned fcnt) {
   int shift = 0;
   if (!bar)
     shift = (smenu.menu_tab == MENUTAB_RECENT || smenu.menu_tab == MENUTAB_ROMBROWSE
-             || smenu.menu_tab == MENUTAB_SETTINGS || smenu.menu_tab == MENUTAB_UILANG || smenu.menu_tab == MENUTAB_INFO
+             || smenu.menu_tab == MENUTAB_SETTINGS || smenu.menu_tab == MENUTAB_UILANG || smenu.menu_tab == MENUTAB_TOOLS || smenu.menu_tab == MENUTAB_INFO
              #ifdef SUPPORT_NORGAMES
              || smenu.menu_tab == MENUTAB_NORBROWSE
              #endif
@@ -4496,14 +4528,12 @@ static void home_activate(int b) {
     else
       spop.alert_msg = "No recent games";
     break;
-  case HB_HWTEST:
-    smenu.menu_tab = MENUTAB_TOOLS;
-    break;
   case HB_CAROUSEL:
     smenu.menu_tab = MENUTAB_ROMBROWSE;
     break;
   case HB_THEME:
     menu_theme = (menu_theme == THEME_DARK) ? THEME_LIGHT : THEME_DARK;
+    sfx_play(menu_theme == THEME_DARK ? SfxLightOff : SfxLightOn);
     reload_theme(menu_theme);
     save_ui_settings();
     break;
@@ -4524,16 +4554,31 @@ static void keypress_menu_home(unsigned newkeys) {
       continue;
     int dst = home_nav[src][d];
     // Moving vertically through the middle row returns to the last used button.
-    if (dst == HB_RECENT && (src == HB_FLASH || src == HB_CAROUSEL))
+    if (dst == HB_RECENT && src != HB_CAROUSEL)
       dst = smenu.home.row2;
     smenu.home.sel = dst;
-    if (dst == HB_RECENT || dst == HB_HWTEST)
+    if (dst == HB_RECENT || dst == HB_CAROUSEL)
       smenu.home.row2 = dst;
+    sfx_play(SfxMove);
     break;
   }
 
-  if (newkeys & KEY_BUTTA)
-    home_activate(smenu.home.sel);
+  if (newkeys & KEY_BUTTA) {
+    const int b = smenu.home.sel;
+    // The big buttons and settings roll up off the screen first. Without anything to open
+    // (the buttons that only show a message) there is nothing to roll to.
+    bool roll = b == HB_CAROUSEL || b == HB_SETTINGS;
+    #ifdef SUPPORT_NORGAMES
+    roll = roll || b == HB_FLASH;
+    #endif
+    roll = roll || (b == HB_RECENT && recent_available());
+    if (roll) {
+      smenu.home.anim = true;
+      smenu.home.anim_b = b;
+      smenu.home.anim_dy = 0;
+    } else
+      home_activate(b);
+  }
 }
 
 #ifdef SUPPORT_NORGAMES
@@ -4731,6 +4776,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       accent_color = (accent_color + ACCENT_COUNT - 1) % ACCENT_COUNT;
     else if (smenu.uiset.selector == UiSetCarou)
       carousel_classic ^= CLASSIC_AVAILABLE;
+    else if (smenu.uiset.selector == UiSetSfx)
+      sfx_enable ^= 1;
   }
   if (newkeys & KEY_BUTTRIGHT) {
     if (smenu.uiset.selector == UiSetTheme)
@@ -4747,6 +4794,8 @@ static void keypress_menu_uisettings(unsigned newkeys) {
       accent_color = (accent_color + 1) % ACCENT_COUNT;
     else if (smenu.uiset.selector == UiSetCarou)
       carousel_classic ^= CLASSIC_AVAILABLE;
+    else if (smenu.uiset.selector == UiSetSfx)
+      sfx_enable ^= 1;
   }
 
   if (newkeys & KEY_BUTTA && smenu.uiset.selector == UiSetName) {
@@ -4934,15 +4983,17 @@ void menu_keypress(unsigned newkeys) {
       keyfns[spop.pop_num](newkeys);
     }
   } else {
+    if (smenu.menu_tab == MENUTAB_HOME && smenu.home.anim)
+      return;                          // The button is still rolling up
     const unsigned tab0 = smenu.menu_tab;
     const bool editing = tab0 == MENUTAB_UILANG && smenu.uiset.editing;
 
     // The settings tabs (settings, UI settings, about) are switched with the
     // shoulder buttons; anywhere else they toggle the clock tab, going back to
     // the previous tab.
-    static const uint8_t setgrp[3] = { MENUTAB_SETTINGS, MENUTAB_UILANG, MENUTAB_INFO };
+    static const uint8_t setgrp[4] = { MENUTAB_SETTINGS, MENUTAB_UILANG, MENUTAB_TOOLS, MENUTAB_INFO };
     int gi = -1;
-    for (unsigned i = 0; i < 3; i++)
+    for (unsigned i = 0; i < 4; i++)
       if (tab0 == setgrp[i])
         gi = i;
     // In the carousels they are "directory up" (L) and "open" (R) instead.
@@ -4955,7 +5006,7 @@ void menu_keypress(unsigned newkeys) {
       if (gi >= 0) {
         if ((newkeys & KEY_BUTTL) && gi > 0)
           smenu.menu_tab = setgrp[gi - 1];
-        else if ((newkeys & KEY_BUTTR) && gi < 2)
+        else if ((newkeys & KEY_BUTTR) && gi < 3)
           smenu.menu_tab = setgrp[gi + 1];
       }
       else if (tab0 == MENUTAB_CLOCK)
